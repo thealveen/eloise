@@ -7,6 +7,8 @@ import type {
 } from "../types/index.js";
 import type { SessionDb } from "./sqlite.js";
 
+// `:` is unambiguous as a separator: Slack channel IDs are uppercase alnum
+// and thread_ts is a numeric string, so neither can contain `:`.
 export function slackKey(channel_id: string, thread_ts: string): string {
   return `${channel_id}:${thread_ts}`;
 }
@@ -20,6 +22,8 @@ export function createResolverFromDb(
   logger: Logger,
   clock: () => number = defaultClock,
 ): SessionResolver {
+  // Wrap read-then-insert in a transaction so concurrent callers can't both
+  // observe "missing" and then race to INSERT the same slack_key.
   const resolveTxn = sdb.db.transaction((key: string, now: number): SessionHandle => {
     const row = sdb.getBySlackKey.get(key);
     if (row) {

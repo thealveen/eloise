@@ -1,13 +1,11 @@
 import type { Logger, SessionResolver } from "../types/index.js";
+import { openSessionDb } from "./sqlite.js";
+import { createResolverFromDb } from "./resolver.js";
 
 export function createSessionResolver(deps: {
   dbPath: string;
   logger: Logger;
 }): SessionResolver {
-  void deps;
-  return {
-    async resolve() {
-      throw new Error("not implemented: session");
-    },
-  };
+  const sdb = openSessionDb(deps.dbPath);
+  return createResolverFromDb(sdb, deps.logger);
 }

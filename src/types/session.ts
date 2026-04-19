@@ -8,4 +8,5 @@ export type SessionHandle = {
 
 export interface SessionResolver {
   resolve(event: NormalizedEvent): Promise<SessionHandle>;
+  exists(channel_id: string, thread_ts: string): Promise<boolean>;
 }

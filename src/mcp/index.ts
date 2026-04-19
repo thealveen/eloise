@@ -1,6 +1,8 @@
 import type { McpConfig } from "../types/index.js";
+import { buildSupabaseServer } from "./supabase.js";
 
 export function loadMcpConfig(env: NodeJS.ProcessEnv): McpConfig {
-  void env;
-  return { servers: [] };
+  return {
+    servers: [buildSupabaseServer(env)],
+  };
 }

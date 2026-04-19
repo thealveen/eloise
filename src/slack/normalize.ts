@@ -1,3 +1,4 @@
+// Implements spec §3 Slack Adapter.
 /**
  * Pure transformation from a raw Slack event payload into the
  * `NormalizedEvent` consumed by the rest of the bot.

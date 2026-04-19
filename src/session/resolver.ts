@@ -1,3 +1,4 @@
+// Implements spec §4 Session Resolver.
 import { v4 as uuidv4 } from "uuid";
 import type {
   Logger,

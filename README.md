@@ -17,7 +17,7 @@ src/
 prompts/system.md
 scripts/init-db.cjs
 data/            # runtime artifacts, gitignored except .gitkeep
-ecosystem.config.js
+ecosystem.config.cjs
 ```
 
 Each component directory has exactly one public entry (`index.ts`). Other components import only from the entry module or from `src/types/`. See spec §10.2.
@@ -38,9 +38,21 @@ npm start
 - `npm test` — vitest
 - `npm run format` — prettier
 
-## Phase 1 status
+## Deployment
 
-This is a scaffold. Component factories exist but their methods throw `not implemented: <component>` at runtime. Downstream agents (A–E) fill them in next. Build and tests pass today; `npm start` starts the process but crashes as soon as Slack input is expected — that's intentional.
+The bot runs as a single Node process under pm2 on an Ubuntu 24.04 VPS. Full first-time walkthrough (Slack app creation, Anthropic/Supabase credentials, Hetzner VPS provisioning, troubleshooting) is in `docs/DEPLOY.md`. Quick reference:
+
+1. **Provision** — as root on a fresh VPS: `bash scripts/setup.sh <repo-url>`. Installs Node 20, pm2, creates `botuser`, clones the repo, runs `npm ci && npm run build && npm run init-db`.
+2. **Configure** — as `botuser`: `cp .env.example .env`, fill in four secrets (`ANTHROPIC_API_KEY`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SUPABASE_MCP_TOKEN`), `chmod 600 .env`.
+3. **Start** — `pm2 start ecosystem.config.cjs`, then `pm2 save`. To survive reboots, run `pm2 startup systemd -u botuser --hp /home/botuser` (as root) and paste the command it prints.
+4. **Update** — `git pull && npm ci && npm run build && pm2 reload slack-bot`.
+5. **Logs** — `pm2 logs slack-bot`. SQLite at `data/sessions.db`.
+
+See `docs/DEPLOY.md` for everything — if it's your first time setting up a Slack bot, start there.
+
+## Status
+
+All core components (Slack adapter, session resolver, agent runner, MCP config, system prompt, observability) are implemented. Phase 1 scaffolding notes are preserved below for historical context.
 
 ## Open decisions (Agent 0)
 

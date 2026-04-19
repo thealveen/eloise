@@ -1,3 +1,4 @@
+// Implements spec §3 Slack Adapter.
 /**
  * Bolt App construction + Socket Mode wiring for the Slack Adapter.
  *

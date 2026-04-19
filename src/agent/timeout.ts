@@ -1,3 +1,4 @@
+// Implements spec §5 Agent Runner.
 export class TimeoutError extends Error {
   constructor(ms: number) {
     super(`timed out after ${ms}ms`);

@@ -1,3 +1,4 @@
+// Implements spec §3 Slack Adapter.
 /**
  * Maps an `AgentError` to the user-facing message posted into the Slack
  * thread when a turn fails.

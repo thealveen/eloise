@@ -1,3 +1,5 @@
+// Implements spec §10.5 Composition Root.
+import "dotenv/config";
 import { createLogger } from "./observability/index.js";
 import { loadSystemPrompt } from "./prompt/index.js";
 import { loadMcpConfig } from "./mcp/index.js";

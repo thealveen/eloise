@@ -1,3 +1,4 @@
+// Implements spec §10.3 Frozen Contracts.
 import type { NormalizedEvent } from "./events.js";
 
 export type SessionHandle = {

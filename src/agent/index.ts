@@ -1,3 +1,4 @@
+// Implements spec §5 Agent Runner.
 import type {
   AgentError,
   AgentRequest,

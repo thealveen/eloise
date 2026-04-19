@@ -1,3 +1,4 @@
+// Implements spec §10.3 Frozen Contracts.
 import type { SessionHandle } from "./session.js";
 
 export type AgentRequest = {

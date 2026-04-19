@@ -1,3 +1,4 @@
+// Implements spec §10.3 Frozen Contracts.
 export type LogLevel = "debug" | "info" | "warn" | "error" | "fatal";
 
 export type LogEvent = {

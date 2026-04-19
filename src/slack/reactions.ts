@@ -1,3 +1,4 @@
+// Implements spec §3 Slack Adapter.
 /**
  * Best-effort reaction add/remove helpers.
  *

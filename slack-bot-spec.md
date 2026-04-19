@@ -305,7 +305,7 @@ A shell script (`setup.sh`) in the repo performs:
 6. Create `/home/botuser/agent-workdir` (the `cwd` for the Agent SDK, per section 5)
 7. Create `/home/botuser/slack-bot/data/` (for the SQLite file)
 8. Run `npm ci` to install Node deps
-9. Initialize the SQLite schema via a small Node script (`scripts/init-db.js`)
+9. Initialize the SQLite schema via a small Node script (`scripts/init-db.cjs`)
 10. Print instructions for creating `.env`
 
 ### `.env` contents
@@ -452,7 +452,7 @@ slack-bot/
 │   └── system.md               # the actual system prompt text
 │
 ├── scripts/
-│   ├── init-db.js              # SQLite schema bootstrap
+│   ├── init-db.cjs             # SQLite schema bootstrap (CommonJS — package is ESM)
 │   └── setup.sh                # VPS one-time setup
 │
 ├── data/                       # runtime artifacts (gitignored)
@@ -473,7 +473,7 @@ slack-bot/
 3. **`src/types/` is the only cross-component import target besides entry modules.** Types are the contract; implementation is private.
 4. **`src/index.ts` is the only file that knows about every component.** Composition lives here and nowhere else.
 5. **Tests live next to code** (`foo.test.ts` next to `foo/index.ts`). Ownership stays obvious.
-6. **Runtime artifacts are gitignored**: `data/`, `.env`, `node_modules/`, and any `~/.claude/` contents.
+6. **Runtime artifacts are gitignored**: `data/` (except `data/.gitkeep`, so the directory exists post-clone), `.env`, `node_modules/`, `dist/`, and any local `.claude/` contents. (On the VPS, `~/.claude/` lives outside the repo root and isn't subject to `.gitignore` at all — the pattern in the repo just prevents local-dev accidental commits.)
 
 ### 10.3 Interface contracts (lives in `src/types/`)
 
@@ -708,6 +708,10 @@ Once Agent 0 has written `src/types/`, stubbed `src/index.ts`, and created empty
 | C | Agent Runner + MCP Config | `src/agent/*`, `src/mcp/*` |
 | D | Prompt + Observability | `src/prompt/*`, `prompts/system.md`, `src/observability/*` |
 | E | Deployment | `scripts/setup.sh`, `ecosystem.config.js`, `.env.example`, `README.md` |
+
+**Ownership note**: Agent 0 creates the **baseline** `.env.example` and `ecosystem.config.js` during Phase 1 scaffolding so the repo installs/builds. Agent E **refines** both during deployment work. Agent E must not change the env-var list without coordinating — new vars affect every component's config loading.
+
+**Handoff convention**: Agents A–E each push a branch `agent-<letter>` off the Phase 1 scaffold commit (e.g., `agent-a`, `agent-b`). Agent 0 merges them in Phase 2 in this order: **D → B → C → A → E**. Rationale: Logger/prompt first (every other component depends on them), then stateless components (session, agent+mcp), then Slack (wires everyone), then deployment docs. Tests should stay runnable at each merge step.
 
 Integration is performed by Agent 0 (or a synthesizer pass) after components land: replace mock entries with real imports in the composition root, run end-to-end tests, fix integration bugs.
 

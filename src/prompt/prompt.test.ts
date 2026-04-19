@@ -1,3 +1,12 @@
+/**
+ * Tests for loadSystemPrompt.
+ *
+ * Uses a temp directory per test to exercise the real filesystem path
+ * — no mocks. The loader is called at boot so its failure modes matter:
+ * missing file and empty file both need to throw rather than silently
+ * returning nothing.
+ */
+
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,12 +35,16 @@ describe("loadSystemPrompt", () => {
   it("throws a clear error when the file does not exist", () => {
     const path = join(dir, "does-not-exist.md");
 
+    // The path must appear in the message so operators can fix it without
+    // digging through stack traces.
     expect(() => loadSystemPrompt(path)).toThrow(
       /system prompt file not found.*does-not-exist\.md/,
     );
   });
 
   it("throws when the file exists but is empty or whitespace-only", () => {
+    // Guards against silently booting with a blank prompt — the model would
+    // freelance on style, formatting, and the K7 write-confirmation rule.
     const path = join(dir, "empty.md");
     writeFileSync(path, "   \n\n", "utf8");
 

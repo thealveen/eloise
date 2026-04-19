@@ -1,3 +1,4 @@
+// Implements spec §9 Observability.
 /**
  * Structured JSON logger.
  *

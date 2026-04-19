@@ -1,3 +1,5 @@
+// Implements spec §5 Agent Runner.
+//
 // Accumulates text and tool-use counts from the Agent SDK's streamed messages.
 //
 // The SDK emits a tagged-union of message types. We care about three shapes:

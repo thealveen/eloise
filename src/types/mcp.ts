@@ -1,3 +1,4 @@
+// Implements spec §10.3 Frozen Contracts.
 export type McpServerConfig = {
   name: string;
   transport: "http" | "stdio";

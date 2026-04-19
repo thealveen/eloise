@@ -1,3 +1,5 @@
+// Implements spec §5 Agent Runner.
+//
 // Agent SDK invocation — findings & design notes (2026-04-19).
 //
 // Open item 1 (spec §11): session semantics.

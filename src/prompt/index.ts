@@ -1,3 +1,4 @@
+// Implements spec §7 System Prompt.
 /**
  * System prompt loader.
  *

@@ -1,3 +1,4 @@
+// Implements spec §4 Session Resolver.
 import Database from "better-sqlite3";
 
 export type SessionRow = {

@@ -323,7 +323,7 @@ Permissions: `chmod 600 .env`, owned by `botuser`.
 
 ### Running
 
-- **Start**: `pm2 start ecosystem.config.js` from the repo root (as `botuser`)
+- **Start**: `pm2 start ecosystem.config.cjs` from the repo root (as `botuser`)
 - **Logs**: `pm2 logs slack-bot`
 - **Restart**: `pm2 restart slack-bot`
 - **Boot persistence**: `pm2 startup` + `pm2 save` once
@@ -345,7 +345,7 @@ Permissions: `chmod 600 .env`, owned by `botuser`.
 │   ├── scripts/init-db.js
 │   ├── data/sessions.db    # SQLite
 │   ├── .env                # secrets
-│   ├── ecosystem.config.js # pm2 config
+│   ├── ecosystem.config.cjs # pm2 config
 │   └── ...
 ├── agent-workdir/          # cwd for Agent SDK; where ~/.claude/ lives implicitly
 └── .claude/
@@ -458,7 +458,7 @@ slack-bot/
 ├── data/                       # runtime artifacts (gitignored)
 │   └── .gitkeep
 │
-├── ecosystem.config.js         # pm2 config
+├── ecosystem.config.cjs         # pm2 config
 ├── .env.example                # committed template
 ├── .gitignore
 ├── package.json
@@ -707,9 +707,9 @@ Once Agent 0 has written `src/types/`, stubbed `src/index.ts`, and created empty
 | B | Session Resolver | `src/session/*`, `scripts/init-db.js` |
 | C | Agent Runner + MCP Config | `src/agent/*`, `src/mcp/*` |
 | D | Prompt + Observability | `src/prompt/*`, `prompts/system.md`, `src/observability/*` |
-| E | Deployment | `scripts/setup.sh`, `ecosystem.config.js`, `.env.example`, `README.md` |
+| E | Deployment | `scripts/setup.sh`, `ecosystem.config.cjs`, `.env.example`, `README.md` |
 
-**Ownership note**: Agent 0 creates the **baseline** `.env.example` and `ecosystem.config.js` during Phase 1 scaffolding so the repo installs/builds. Agent E **refines** both during deployment work. Agent E must not change the env-var list without coordinating — new vars affect every component's config loading.
+**Ownership note**: Agent 0 creates the **baseline** `.env.example` and `ecosystem.config.cjs` during Phase 1 scaffolding so the repo installs/builds. Agent E **refines** both during deployment work. Agent E must not change the env-var list without coordinating — new vars affect every component's config loading.
 
 **Handoff convention**: Agents A–E each push a branch `agent-<letter>` off the Phase 1 scaffold commit (e.g., `agent-a`, `agent-b`). Agent 0 merges them in Phase 2 in this order: **D → B → C → A → E**. Rationale: Logger/prompt first (every other component depends on them), then stateless components (session, agent+mcp), then Slack (wires everyone), then deployment docs. Tests should stay runnable at each merge step.
 

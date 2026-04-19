@@ -1,3 +1,4 @@
+// Implements spec §3 Slack Adapter.
 /**
  * Slack Adapter — public entry.
  *

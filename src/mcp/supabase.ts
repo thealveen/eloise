@@ -1,3 +1,5 @@
+// Implements spec §6 MCP Configuration.
+//
 // Supabase MCP authentication — findings (2026-04-19)
 //
 // Source: https://supabase.com/docs/guides/getting-started/mcp

@@ -1,3 +1,4 @@
+// Implements spec §4 Session Resolver.
 import type { Logger, SessionResolver } from "../types/index.js";
 import { openSessionDb } from "./sqlite.js";
 import { createResolverFromDb } from "./resolver.js";

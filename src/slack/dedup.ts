@@ -1,3 +1,4 @@
+// Implements spec §3 Slack Adapter.
 /**
  * In-memory de-duplication of Slack message timestamps.
  *

@@ -1,3 +1,4 @@
+// Implements spec §3 Slack Adapter.
 /**
  * Per-event orchestrator for the Slack Adapter.
  *

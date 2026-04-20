@@ -20,7 +20,7 @@ async function main() {
     systemPrompt,
     mcpConfig,
     timeoutMs: 120_000,
-    cwd: "/home/botuser/agent-workdir",
+    cwd: process.env.AGENT_WORKDIR ?? "/home/botuser/agent-workdir",
     anthropicApiKey: requireEnv("ANTHROPIC_API_KEY"),
     logger,
   });

@@ -1,26 +1,24 @@
 // Implements spec §5 Agent Runner.
 //
-// Agent SDK invocation — findings & design notes (2026-04-19).
-//
-// Open item 1 (spec §11): session semantics.
-// Source: https://code.claude.com/docs/en/agent-sdk/sessions
+// Agent SDK invocation — session semantics (updated 2026-04-20).
 //
 //   - query() returns an AsyncGenerator of SDKMessage events.
-//   - `resume: "<uuid>"` resumes an on-disk session if present; otherwise the
-//     SDK silently starts a fresh session. It does not error on unknown ids.
+//   - `resume: "<uuid>"` resumes an on-disk session. If the id is unknown,
+//     the SDK now HARD-ERRORS with `No conversation found with session ID`
+//     and the subprocess exits with code 1 (older SDK versions silently
+//     started a fresh session — do not rely on that).
 //   - The SDK mints its own session id for brand-new sessions; there is no
 //     documented option to force a caller-supplied UUID onto a new session.
-//     The actual session id is reported in the `system` init message and the
-//     final `result` message.
+//     The actual session id is reported in the `system` init message and
+//     the final `result` message.
 //
-// Consequence: SessionResolver generates a UUID up-front and stores it in
-// SQLite, but on a brand-new conversation the SDK may end up using a
-// different id. The public AgentResult contract (types/agent.ts) doesn't
-// carry the SDK's id, so we can't propagate it back to SessionResolver in
-// v1. We detect the drift here, log a warn, and proceed — subsequent turns
-// keep passing the SQLite-stored id, so the drift stays stable (not
-// growing). A clean fix requires widening AgentResponse + SessionResolver;
-// deferred to v2.
+// Consequence for our flow:
+//   - SessionHandle.is_new === true → omit `resume` entirely. Capture the
+//     SDK's minted id via the accumulator and propagate it up through
+//     AgentResponse.sdk_session_id so the Slack handler can rewrite the
+//     SQLite row. Next turn on the same thread will resume cleanly.
+//   - is_new === false → pass the stored id (which is now the SDK's own id
+//     from a prior successful turn) as `resume`.
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentRequest, McpConfig } from "../types/index.js";
@@ -36,6 +34,8 @@ export type InvokeResult = {
   text: string;
   tool_calls: number;
   sdk_session_id?: string;
+  mcp_servers?: { name: string; status: string }[];
+  tools?: string[];
 };
 
 // Spec §5: MCP tools + filesystem primitives. The `mcp__<server>` prefix is
@@ -84,12 +84,26 @@ export async function invokeAgent(
   const iter = query({
     prompt: request.user_text,
     options: {
-      resume: request.session.session_id,
+      // Only pass `resume` for threads with a prior successful turn — a
+      // brand-new thread has no id the SDK would recognize yet.
+      ...(request.session.is_new
+        ? {}
+        : { resume: request.session.session_id }),
       systemPrompt: deps.systemPrompt,
       mcpServers: toSdkMcpServers(deps.mcpConfig),
       cwd: deps.cwd,
       allowedTools: [...ALLOWED_TOOLS],
       maxTurns: MAX_TURNS,
+      // Pin to the running node binary so nvm/volta/asdf users don't hit
+      // `spawn node ENOENT` — the SDK otherwise spawns bare "node" which
+      // relies on PATH resolution in the child process.
+      executable: process.execPath,
+      // Surface the subprocess's stderr. Quiet on healthy runs; invaluable
+      // when the CLI itself crashes ("No conversation found", missing
+      // permissions, MCP handshake errors, etc.).
+      stderr: (msg: string) => {
+        process.stderr.write(`[claude-cli] ${msg}`);
+      },
     },
   } as Parameters<typeof query>[0]);
 
@@ -123,5 +137,7 @@ export async function invokeAgent(
     text: acc.text,
     tool_calls: acc.tool_calls,
     sdk_session_id: acc.sdk_session_id,
+    mcp_servers: acc.mcp_servers,
+    tools: acc.tools,
   };
 }

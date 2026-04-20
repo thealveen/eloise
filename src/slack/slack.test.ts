@@ -42,7 +42,12 @@ function makeSessionResolver(handle: Partial<SessionHandle> = {}): SessionResolv
     is_new: handle.is_new ?? false,
     slack_key: handle.slack_key ?? "C123:1700000000.000100",
   };
-  return { resolve: vi.fn().mockResolvedValue(full) };
+  return {
+    resolve: vi.fn().mockResolvedValue(full),
+    exists: vi.fn().mockResolvedValue(true),
+    update: vi.fn().mockResolvedValue(undefined),
+    drop: vi.fn().mockResolvedValue(undefined),
+  };
 }
 
 function makeAgentRunner(result: AgentResult): AgentRunner {
@@ -390,6 +395,33 @@ describe("event handler", () => {
     await handler.handle(raw, client, "message");
 
     expect(agentRunner.run).toHaveBeenCalledTimes(1);
+  });
+
+  // Regression: when Slack delivers the `message.channels` event BEFORE the
+  // paired `app_mention` for the same ts, we must not let the gated-out
+  // message event burn the dedup slot — otherwise the @mention silently
+  // drops and the bot never replies.
+  it("processes @mention when message.channels arrives before app_mention", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeAgentRunner({
+      ok: true,
+      response: { text: "ok", duration_ms: 1, tool_calls: 0 },
+    });
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+    });
+    const client = makeClient();
+
+    const raw = channelMention();
+    await handler.handle(raw, client, "message"); // K4 drops without marking
+    await handler.handle(raw, client, "mention"); // must still run
+
+    expect(agentRunner.run).toHaveBeenCalledTimes(1);
+    expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
   });
 
   it("channel non-mention top-level message is ignored (no reactions, no resolve)", async () => {

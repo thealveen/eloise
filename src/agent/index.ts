@@ -45,17 +45,11 @@ export function createAgentRunner(deps: {
         );
         const duration_ms = Date.now() - start;
 
-        if (
-          out.sdk_session_id &&
-          out.sdk_session_id !== request.session.session_id
-        ) {
-          deps.logger.warn("sdk session id drift", {
-            session_id: request.session.session_id,
-            slack_key: request.meta.slack_key,
-            sdk_session_id: out.sdk_session_id,
-          });
-        }
-
+        // Surface MCP server connection status and tool count so "bot says it
+        // has no MCP tools" is debuggable from logs alone. If `supabase` is
+        // `failed` / `needs-auth`, or no `mcp__supabase__*` names appear in
+        // `mcp_tools`, the Supabase PAT or URL is the culprit.
+        const mcp_tools = (out.tools ?? []).filter((t) => t.startsWith("mcp__"));
         deps.logger.info("agent ok", {
           status: "ok",
           duration_ms,
@@ -63,6 +57,9 @@ export function createAgentRunner(deps: {
           session_id: request.session.session_id,
           slack_key: request.meta.slack_key,
           user_id: request.meta.user_id,
+          sdk_session_id: out.sdk_session_id,
+          mcp_servers: out.mcp_servers,
+          mcp_tools_count: mcp_tools.length,
         });
 
         return {
@@ -71,6 +68,7 @@ export function createAgentRunner(deps: {
             text: out.text,
             duration_ms,
             tool_calls: out.tool_calls,
+            sdk_session_id: out.sdk_session_id,
           },
         };
       } catch (err) {

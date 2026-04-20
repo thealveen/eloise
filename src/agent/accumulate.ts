@@ -12,6 +12,12 @@ export type Accumulator = {
   text: string;
   tool_calls: number;
   sdk_session_id?: string;
+  // Populated from the `system` init message. Useful as a diagnostic when
+  // the agent reports "I don't have MCP tooling" — that usually means the
+  // supabase server's status here is `failed` or `needs-auth`, or no
+  // `mcp__supabase__*` names appear in `tools`.
+  mcp_servers?: { name: string; status: string }[];
+  tools?: string[];
 };
 
 export function initAccumulator(): Accumulator {
@@ -31,6 +37,19 @@ export function applyMessage(acc: Accumulator, msg: unknown): void {
   if (type === "system") {
     const sessionId = msg.session_id;
     if (typeof sessionId === "string") acc.sdk_session_id = sessionId;
+    if (Array.isArray(msg.mcp_servers)) {
+      acc.mcp_servers = msg.mcp_servers
+        .filter(
+          (s): s is { name: string; status: string } =>
+            isRecord(s) &&
+            typeof s.name === "string" &&
+            typeof s.status === "string",
+        )
+        .map((s) => ({ name: s.name, status: s.status }));
+    }
+    if (Array.isArray(msg.tools)) {
+      acc.tools = msg.tools.filter((t): t is string => typeof t === "string");
+    }
     return;
   }
 

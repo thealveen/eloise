@@ -14,7 +14,7 @@ Running the bot on your laptop against **real** Slack, Anthropic, and Supabase c
 - **Native build toolchain** for `better-sqlite3`:
   - macOS: `xcode-select --install` (once per machine).
   - Linux: `sudo apt install -y build-essential sqlite3 git`.
-- **The four secrets from `docs/DEPLOY.md` Step 1** — Slack bot token (`xoxb-…`), Slack app-level token (`xapp-…`), Anthropic API key (`sk-ant-…`), Supabase PAT. If you've never made a Slack app before, go do §1a–§1c of that doc and come back — the steps are identical for local.
+- **The four secrets from `docs/DEPLOY.md` Step 1** — Slack bot token (`xoxb-…`), Slack app-level token (`xapp-…`), Anthropic API key (`sk-ant-…`), Supabase PAT. If you've never made a Slack app before, go do §1a–§1c of that doc and come back — the steps are identical for local. If you've run an older version of this bot before, also do §1a.i ("Updating an existing install") so thread replies without `@mention` work.
 
 ## Setup
 

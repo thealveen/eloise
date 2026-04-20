@@ -19,7 +19,7 @@ You need four things before you touch the server: a Slack app with two tokens, a
    ```yaml
    display_information:
      name: Slack Bot
-     description: Answers @mentions via the Claude Agent SDK.
+     description: Answers @mentions and continues threads via the Claude Agent SDK.
    features:
      bot_user:
        display_name: Slack Bot
@@ -30,10 +30,18 @@ You need four things before you touch the server: a Slack app with two tokens, a
          - app_mentions:read
          - chat:write
          - reactions:write
+         - channels:history
+         - groups:history
+         - im:history
+         - mpim:history
    settings:
      event_subscriptions:
        bot_events:
          - app_mention
+         - message.channels
+         - message.groups
+         - message.im
+         - message.mpim
      interactivity:
        is_enabled: false
      org_deploy_enabled: false
@@ -41,10 +49,22 @@ You need four things before you touch the server: a Slack app with two tokens, a
      token_rotation_enabled: false
    ```
 
+   The `message.*` subscriptions + `*:history` scopes are what let the bot continue a thread without being re-@mentioned on every reply. The handler only *acts* on explicit mentions and thread replies in active sessions, but with these scopes the bot *can see* every message in any channel it's been added to. Don't add it to sensitive channels you wouldn't want it reading.
+
 4. In the left sidebar, click **Install App** → **Install to Workspace** → **Allow**. Copy the **Bot User OAuth Token** (starts with `xoxb-`). This is `SLACK_BOT_TOKEN`.
 5. Click **Basic Information** → scroll to **App-Level Tokens** → **Generate Token and Scopes**. Give it any name; add scope **`connections:write`**; click **Generate**. Copy the token (starts with `xapp-`). This is `SLACK_APP_TOKEN`.
 
 Tokens are only shown once. Paste them into a password manager or a scratch note you'll paste from later.
+
+### 1a.i. Updating an existing install
+
+If you already installed the bot with an older manifest (or your bot only replies when @-mentioned), re-grant scopes:
+
+1. Open your app at <https://api.slack.com/apps> → pick your app.
+2. Sidebar → **App Manifest** → replace the YAML with the block above → **Save Changes**.
+3. Slack detects the new scopes and shows a yellow **Reinstall your app** banner at the top. Click it → **Allow**.
+4. Your `SLACK_BOT_TOKEN` does not change; no `.env` edit required.
+5. No restart needed — the bot's Socket Mode connection picks up the newly-granted events immediately. (Restart if you want, it's harmless.)
 
 ### 1b. Anthropic API key
 

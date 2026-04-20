@@ -14,6 +14,7 @@ export type AgentResponse = {
   text: string;
   duration_ms: number;
   tool_calls: number;
+  sdk_session_id?: string;
 };
 
 export type AgentError =

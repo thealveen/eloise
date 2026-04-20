@@ -113,19 +113,47 @@ describe("createAgentRunner.run", () => {
     expect(result.response.duration_ms).toBeGreaterThanOrEqual(0);
   });
 
-  it("logs a warn when the SDK's session id drifts", async () => {
+  it("omits `resume` for brand-new sessions so the SDK mints its own id", async () => {
+    let seenOpts: Record<string, unknown> | undefined;
+    mockQueryImpl = (opts) => {
+      seenOpts = (opts as { options: Record<string, unknown> }).options;
+      return gen([
+        { type: "system", subtype: "init", session_id: "sdk-new" },
+        { type: "result", session_id: "sdk-new" },
+      ]);
+    };
+    const { runner } = makeRunner();
+    await runner.run(makeRequest({ session: { session_id: "local-uuid", is_new: true, slack_key: "C1:1" } }));
+    expect(seenOpts).toBeDefined();
+    expect(seenOpts && "resume" in seenOpts).toBe(false);
+  });
+
+  it("passes `resume` for returning sessions", async () => {
+    let seenOpts: Record<string, unknown> | undefined;
+    mockQueryImpl = (opts) => {
+      seenOpts = (opts as { options: Record<string, unknown> }).options;
+      return gen([{ type: "result", session_id: "sess-123" }]);
+    };
+    const { runner } = makeRunner();
+    await runner.run(makeRequest({ session: { session_id: "sess-123", is_new: false, slack_key: "C1:1" } }));
+    expect(seenOpts?.resume).toBe("sess-123");
+  });
+
+  it("returns the SDK's minted id in the response so the handler can persist it", async () => {
     mockQueryImpl = () =>
       gen([
-        { type: "system", subtype: "init", session_id: "sdk-abc" },
-        { type: "result", session_id: "sdk-abc" },
+        { type: "system", subtype: "init", session_id: "sdk-xyz" },
+        {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "ok" }] },
+        },
+        { type: "result", session_id: "sdk-xyz" },
       ]);
-    const { runner, logger } = makeRunner();
-    await runner.run(makeRequest());
-    expect(
-      logger.events.some(
-        (e) => e.level === "warn" && e.sdk_session_id === "sdk-abc",
-      ),
-    ).toBe(true);
+    const { runner } = makeRunner();
+    const result = await runner.run(makeRequest({ session: { session_id: "local-uuid", is_new: true, slack_key: "C1:1" } }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.response.sdk_session_id).toBe("sdk-xyz");
   });
 
   it("returns timeout when the SDK stream never yields", async () => {

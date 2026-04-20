@@ -71,16 +71,21 @@ export function createEventHandler(deps: {
     client: SlackClient,
     source: EventSource,
   ): Promise<void> {
-    // Step 1: dedup. `message_ts` (Slack's `ts`) uniquely identifies a
-    // message; the same `ts` arriving twice means a duplicate delivery
-    // (network retry, or app_mention + message double-fire for the same
-    // mention). Skip silently — the original delivery is in flight.
+    // Step 1: dedup seen-check only. `message_ts` (Slack's `ts`) uniquely
+    // identifies a message; the same `ts` arriving twice means a duplicate
+    // delivery (network retry, or app_mention + message double-fire for the
+    // same mention). Skip silently — the original delivery is in flight.
+    //
+    // We deliberately do NOT mark() here. Marking is deferred until after the
+    // K4 gate below, because when a channel @mention arrives as two events
+    // (`app_mention` + `message.channels`) with non-deterministic order, we
+    // must not let the `message.channels` event burn the dedup slot and
+    // silently drop via K4 — that would block the paired `app_mention`.
     if (!raw.ts) return;
     if (deps.dedup.seen(raw.ts)) {
       deps.logger.debug("dedup hit", { message_ts: raw.ts });
       return;
     }
-    deps.dedup.mark(raw.ts);
 
     // Step 2: normalize + filter. Returns null for any event we shouldn't
     // act on (own/bot messages, edits/deletes, empty text, etc.).
@@ -100,8 +105,14 @@ export function createEventHandler(deps: {
     const isChannelNonMention = event.source === "channel" && source === "message";
     if (isChannelNonMention && !isThreadReply(raw)) {
       // Top-level channel message without an @mention — not for us.
+      // Don't mark dedup: the paired app_mention event for the same ts
+      // still needs to go through.
       return;
     }
+
+    // Commit to handling this event. Any duplicate delivery of the same ts
+    // (from here on) should be treated as the paired double-fire and skipped.
+    deps.dedup.mark(raw.ts);
 
     // Step 4: receipt UX. Add 🤔 immediately so the user sees we got it.
     await addReaction(client, event.channel_id, event.message_ts, THINKING, deps.logger);
@@ -153,6 +164,15 @@ export function createEventHandler(deps: {
       );
 
       if (result.ok) {
+        // First-turn bookkeeping: our SQLite row was inserted with a
+        // client-side UUID that the Agent SDK has never seen. Replace it
+        // with the id the SDK actually minted so the next turn can resume.
+        if (session.is_new && result.response.sdk_session_id) {
+          await deps.sessionResolver.update(
+            session.slack_key,
+            result.response.sdk_session_id,
+          );
+        }
         // Always post in-thread per the hard constraint. `event.thread_ts`
         // is guaranteed populated by normalize (top-level falls back to ts).
         // Text is passed through verbatim — system prompt is responsible for
@@ -167,6 +187,12 @@ export function createEventHandler(deps: {
           tool_calls: result.response.tool_calls,
         });
       } else {
+        // First-turn failure on a brand-new session: drop the row so the
+        // user's retry starts clean. Leaving it would pin this thread to
+        // a UUID the SDK will always reject.
+        if (session.is_new) {
+          await deps.sessionResolver.drop(session.slack_key);
+        }
         // Agent reported a structured error. Add ❌ + post a friendly,
         // kind-specific message (K12). The full error is in the log only.
         await addReaction(
@@ -192,6 +218,14 @@ export function createEventHandler(deps: {
       // bug in our own code — surfaces here. We MUST tell the user something
       // and log. Never silently swallow.
       const message = err instanceof Error ? err.message : String(err);
+      // Same is_new-drop rationale as the structured-error branch above.
+      if (session?.is_new) {
+        try {
+          await deps.sessionResolver.drop(session.slack_key);
+        } catch {
+          // best effort
+        }
+      }
       try {
         await removeReaction(
           client,

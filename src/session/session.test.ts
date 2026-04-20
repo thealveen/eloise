@@ -108,4 +108,30 @@ describe("createSessionResolver", () => {
     expect(a.session_id).not.toBe(b.session_id);
     expect(b.is_new).toBe(true);
   });
+
+  it("update() overwrites the session_id for an existing row", async () => {
+    const resolver = createSessionResolver({ dbPath: ":memory:", logger: silentLogger() });
+    const event = makeEvent("C1", "1700000000.000001");
+
+    const first = await resolver.resolve(event);
+    await resolver.update(first.slack_key, "sdk-real-id");
+
+    const after = await resolver.resolve(event);
+    expect(after.session_id).toBe("sdk-real-id");
+    expect(after.is_new).toBe(false);
+  });
+
+  it("drop() removes the row so the next resolve is a fresh session", async () => {
+    const resolver = createSessionResolver({ dbPath: ":memory:", logger: silentLogger() });
+    const event = makeEvent("C1", "1700000000.000001");
+
+    const first = await resolver.resolve(event);
+    expect(first.is_new).toBe(true);
+    await resolver.drop(first.slack_key);
+    expect(await resolver.exists("C1", "1700000000.000001")).toBe(false);
+
+    const second = await resolver.resolve(event);
+    expect(second.is_new).toBe(true);
+    expect(second.session_id).not.toBe(first.session_id);
+  });
 });

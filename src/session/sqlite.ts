@@ -13,6 +13,8 @@ export type SessionDb = {
   getBySlackKey: Database.Statement<[string], Pick<SessionRow, "session_id"> | undefined>;
   insertSession: Database.Statement<[string, string, number, number]>;
   updateLastUsed: Database.Statement<[number, string]>;
+  updateSessionId: Database.Statement<[string, number, string]>;
+  deleteByKey: Database.Statement<[string]>;
   existsBySlackKey: Database.Statement<[string], { one: number } | undefined>;
   close(): void;
 };
@@ -39,6 +41,12 @@ export function openSessionDb(dbPath: string): SessionDb {
   const updateLastUsed = db.prepare<[number, string]>(
     "UPDATE thread_sessions SET last_used_at = ? WHERE slack_key = ?",
   );
+  const updateSessionId = db.prepare<[string, number, string]>(
+    "UPDATE thread_sessions SET session_id = ?, last_used_at = ? WHERE slack_key = ?",
+  );
+  const deleteByKey = db.prepare<[string]>(
+    "DELETE FROM thread_sessions WHERE slack_key = ?",
+  );
   const existsBySlackKey = db.prepare<[string], { one: number }>(
     "SELECT 1 AS one FROM thread_sessions WHERE slack_key = ? LIMIT 1",
   );
@@ -48,6 +56,8 @@ export function openSessionDb(dbPath: string): SessionDb {
     getBySlackKey,
     insertSession,
     updateLastUsed,
+    updateSessionId,
+    deleteByKey,
     existsBySlackKey,
     close: () => db.close(),
   };

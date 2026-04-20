@@ -197,6 +197,16 @@ pm2 reload slack-bot
 
 If `.env.example` gained a new variable, `pm2 logs` will show `missing env var: X`. Add it to `.env`, then `pm2 restart slack-bot` (reload won't re-read env on its own).
 
+## Updating env vars
+
+Edit `~/slack-bot/.env` (as `botuser`), then:
+
+```sh
+sudo -u botuser pm2 restart slack-bot
+```
+
+Use `restart`, not `reload`. `reload` keeps the old env vars in memory; `restart` kills the process and picks up the new `.env` via our `dotenv/config` import. Verify with `pm2 logs slack-bot` — you should see `bot started` again within a second.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

@@ -22,6 +22,7 @@ async function main() {
     timeoutMs: 120_000,
     cwd: process.env.AGENT_WORKDIR ?? "/home/botuser/agent-workdir",
     anthropicApiKey: requireEnv("ANTHROPIC_API_KEY"),
+    model: process.env.AGENT_MODEL,
     logger,
   });
   const slackAdapter = createSlackAdapter({

@@ -17,6 +17,10 @@ export function createAgentRunner(deps: {
   timeoutMs: number;
   cwd: string;
   anthropicApiKey: string;
+  // Optional model override. Undefined → SDK default (currently Sonnet).
+  // Set via `AGENT_MODEL` env var. Accepts any CLI-recognized value,
+  // e.g. "claude-opus-4-7", "opus", "claude-sonnet-4-5".
+  model?: string;
   logger: Logger;
 }): AgentRunner {
   // The SDK reads ANTHROPIC_API_KEY from env. Set it once at factory time so
@@ -38,6 +42,7 @@ export function createAgentRunner(deps: {
               systemPrompt: deps.systemPrompt,
               mcpConfig: deps.mcpConfig,
               cwd: deps.cwd,
+              model: deps.model,
             },
             request,
             signal,

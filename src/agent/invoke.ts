@@ -28,6 +28,7 @@ export type InvokeDeps = {
   systemPrompt: string;
   mcpConfig: McpConfig;
   cwd: string;
+  model?: string;
 };
 
 export type InvokeResult = {
@@ -89,6 +90,7 @@ export async function invokeAgent(
       ...(request.session.is_new
         ? {}
         : { resume: request.session.session_id }),
+      ...(deps.model ? { model: deps.model } : {}),
       systemPrompt: deps.systemPrompt,
       mcpServers: toSdkMcpServers(deps.mcpConfig),
       cwd: deps.cwd,

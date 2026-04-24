@@ -14,6 +14,14 @@ If the user pasted application text inline, use that directly — don't query.
 
 Otherwise: pick a filter, count with it, decide chunking, execute. One filter, one skeleton, no exploration.
 
+### Rules (non-negotiable)
+
+- The query in Step 4 is the *only* shape used to fetch application data. Filters and OFFSET change between runs. Nothing else.
+- Do not fetch answers per application.
+- Do not remove the `q.key IN (...)` whitelist to "see what else is there."
+- Do not issue diagnostic queries on sparse apps. Sparse rows score Level 0 on the affected axis per the rubric — do not investigate.
+- Each chunk returns one row per app with the 9 answer columns pivoted. That row is the complete input for scoring; missing columns are evidence, not a reason to requery.
+
 ### Step 1 — Pick the filter
 
 Map the user's request to a `<filter>` from this cookbook. Combine with `AND` as needed.
@@ -31,7 +39,7 @@ Stage slugs: `inbox_review`, `first_interview`, `final_interview`, `decision_pen
 
 Use `evaluation_stage_change` to identify apps that *reached* a stage, not `furthest_stage_id` — the latter only captures the latest stage, not the journey.
 
-If no cookbook entry matches, write a new WHERE in the same shape. Do not issue probing queries to figure out the schema.
+**Escape hatch.** If no cookbook entry matches, write one WHERE in the skeleton above. Do not issue probing queries. If you need a column you don't know, tell the user and stop — do not explore the schema.
 
 ### Step 2 — Count
 
@@ -95,6 +103,7 @@ Why this shape:
 - `MAX(CASE WHEN q.key=...)` pivots the whitelisted answers into columns — one row per app.
 - `LEFT(...,1500)` keeps a 5-app chunk under the SDK's ~100k-char persistence threshold.
 - The whitelist is locked to: `company_description, problem, validation, market_size, unique_insight, current_solution, progress, journey, anything_else`. Boolean/number/select answers don't drive the rubric.
+- The row returned per app is the **complete** scoring input. If a column is null, that is evidence — score Level 0 on the affected axis. Do not requery.
 
 If a chunk still persists (rare, only on unusually long answers), unwrap it with the `jq` recipe in the system prompt's "Persisted tool results" section. Do not re-query with smaller truncation.
 
@@ -126,10 +135,7 @@ Generic claims ("we fine-tuned," "we use RAG," "it's accurate") are NOT craft-le
 - "Cutting-edge", "state-of-the-art", "intelligent" (unqualified)
 - Treating "AI" as a single undifferentiated capability
 
-**Tool references.** Canonical lists — expand as new tools become standard. A mention must be explicit (named), not implied.
-- *Dev-loop tools:* Cursor, Claude Code, Aider, GitHub Copilot, v0, Windsurf, Cody, Continue, Replit Agent, Tabnine
-- *Orchestration / runtime tools:* n8n, Make, Zapier (AI features), MCP, LangChain, LangGraph, CrewAI, AutoGen, Inngest, Temporal, Dagster, explicitly-named custom orchestration stacks
-- *Eval / infra tools:* LangSmith, Braintrust, Helicone, DSPy, guardrails libraries, custom eval harnesses
+**Canonical tool references (non-exhaustive).** Dev-loop: Cursor, Claude Code, Copilot, Aider, v0, Windsurf, Replit Agent. Orchestration/runtime: n8n, Zapier, Make, MCP, LangChain, LangGraph, CrewAI, AutoGen, Inngest, Temporal. Eval/infra: LangSmith, Braintrust, Helicone, DSPy, guardrails libraries. A mention must be explicit (named), not implied.
 
 **Production AI.** AI doing work that would otherwise require a human, a team, or a conventional non-AI system. Two equivalent categories — treat them the same:
 - *In-product AI:* AI is a feature customers use — chat agent, classification, generation, recommendations, retrieval, decisioning.
@@ -295,30 +301,18 @@ If the quote minimums cannot be collected from the application text, drop one le
 
 ## Scoring rules
 
-1. **The two axes are INDEPENDENT.** Score each separately using its own decision procedure. A founder can be AI Fluency 1 / Customer Insight 5, or AI Fluency 4 / Customer Insight 2, etc.
+1. **ICP-fit is `AI Fluency >= 3` AND `Customer Insight >= 3`.** Anything else is not ICP-fit. If either score is 0, `icp_fit` is false and the reason should mention needing enrichment.
 
-2. **Source of truth — both axes, evidence over claim.**
-   - *AI Fluency:* the founder's description of their own work is the evidence. Marketing claims alone cap AI Fluency at Level 1 (Gate 2). Product copy doesn't substitute for the founder showing craft.
-   - *Customer Insight:* concrete, specific evidence of customer contact in the application text is what counts. Interview counts without substance ("we spoke to 100 users") cap Customer Insight at Level 2 (Gate 2). The claim of contact isn't contact — the specifics are.
-
-3. **Evidence before score.** Emit a level only if its quote minimums are met. If not, drop one level and re-check. Quotes must come from the founder's answers, not from aggregated product blurbs.
-
-4. **Sparse applications get Level 0.** Don't guess. Gate 0 is the test for each axis — if it fails, score 0 with "insufficient data" and set confidence high.
-
-5. **ICP-fit is: `AI Fluency >= 3` AND `Customer Insight >= 3`.** Anything else is not ICP-fit. If either score is 0, `icp_fit` is false and the reason should mention needing enrichment.
-
-6. **Confidence** is anchored to evidence coverage, not impression:
-   - **high**: all quote minimums are exceeded (more than required quotes available); signals appear in multiple answers; no contradictions.
-   - **medium**: quote minimums met exactly; or signals present but some contradiction (e.g. craft language in one answer, dominant magic language elsewhere); or the passing gate was narrow.
-   - **low**: quote minimums barely met with sparse supporting evidence; contradictory signals across answers; or a borderline gate decision. Surface in the verdict.
-
-7. **Borderline gate decisions get named.** When a gate is close (e.g. a single thin tradeoff statement for AI Fluency Gate 4b, or one non-obvious behavior that might just be restating the obvious for Customer Insight Gate 3), name the borderline gate in Part 2 and emit a `⚠️ Review — borderline` verdict with confidence low. Don't fake confidence.
+2. **Confidence** is anchored to evidence coverage:
+   - **high**: quote minimums exceeded; signals appear in multiple answers; no contradictions.
+   - **medium**: quote minimums met exactly; some contradiction; or passing gate was narrow.
+   - **low**: quote minimums barely met; contradictory signals; or borderline gate decision. Use the `⚠️ Review` verdict and name the borderline gate in Part 2.
 
 Quote the founder's own words where possible. Do not infer facts not present in the application.
 
 ## Output format
 
-Three parts, Slack mrkdwn.
+Two parts, Slack mrkdwn.
 
 ### Part 1: scoring cards
 
@@ -391,7 +385,7 @@ One structured block per ICP-fit (`✅`) or borderline (`⚠️`) founder. Skip 
 - The `→` line names which signal the quote satisfies and the gate it triggered. Examples: `→ architecture tradeoff (Gate 4b)`, `→ non-obvious behavior (Gate 3b)`, `→ operator background, Path A (Gate 4)`.
 - For borderline gates, replace the `→` line with: `→ borderline at Gate {N}: <one-line reason>`. Example: `→ borderline at Gate 4b: only one tradeoff statement, phrased loosely`.
 - Drop `Traction` if the application doesn't show it.
-- Drop `Flags` if empty. Flags include: `🔁 previously rejected {cohort}` (check `evaluation_stage_change` for a prior `Rejected` terminal on the same company/founder), or other pod-level callouts. Previously-rejected founders are retroactive-pipeline candidates.
+- Drop `Flags` if empty. Flags are pod-level callouts only.
 
 **Example:**
 
@@ -410,51 +404,10 @@ One structured block per ICP-fit (`✅`) or borderline (`⚠️`) founder. Skip 
   → borderline at Gate 4a: retry mention is generic, no specific failure mode named
 *Customer Insight:* `"ops managers at 3 of our pilots told us they'd quit if we went away"`
   → specific-archetype detail (Gate 2)
-*Flags:* 🔁 previously rejected W24
-```
-
-### Part 3: batch patterns
-
-**For N < 3: skip this section entirely.** A single founder or pair doesn't have a batch shape.
-
-**For N ≥ 3, always include:**
-
-1. **One-line summary.** `{F} fit · {R} review · {M} miss · {S} sparse` of {N} total.
-2. **One-line action.** Concrete next step — `reach out to the {F} fits`, `{names} need a second look`, `re-trigger {company} for more data`, or a comma-joined combination. Not vague exhortations.
-
-**Optionally include, only if the pattern would pass the "worth telling a colleague over coffee" test:**
-
-- Dominant miss or fit shape (e.g. "5 of 6 misses have Customer Insight ≥3 but AI Fluency ≤2 — domain experts without AI depth, different outreach shape than typical rejects").
-- Data quality issue (e.g. "4 of 10 applications are sparse — worth flagging to whoever runs the form").
-- Unusual founder shape (e.g. "One founder cleared Gate 4 Path B without operator background — rare, worth a second read").
-- Any surprise cluster, anti-cluster, or cross-axis interaction worth discussing.
-
-If the batch is unremarkable, say so in one sentence and stop. Do not pad. Geographic distribution, cohort spread, and generic observations are NOT worth including — leave them out.
-
-**Example (N=10):**
-
-```
-*Batch summary.* 3 fit · 2 review · 4 miss · 1 sparse of 10 total.
-
-Dominant miss shape: all 4 misses have Customer Insight ≥3 but AI Fluency ≤2 — domain experts who haven't picked up AI. Worth a different outreach treatment than typical rejects; might be a re-engage sequence rather than a reject.
-
-*Action.* Reach out to Jane, Mira, and Thiago (the 3 fits). Revisit Clara and Sam next week on the low-confidence calls. Consider a "domain experts without AI" sequence for the 4 misses.
-```
-
-**Example (N=10, unremarkable batch):**
-
-```
-*Batch summary.* 1 fit · 1 review · 7 miss · 1 sparse of 10 total.
-
-Nothing unusual in the batch beyond the summary.
-
-*Action.* Reach out to Priya (the single fit). Pass on the rest.
 ```
 
 ## Tone and style
 
-- Direct, analytical. No hedging. No padding.
-- If a section is short because the batch is small, leave it short.
-- Quote founders' words when they reveal something sharp — that's the evidence base, not decoration.
-- When scoring is close or uncertain, say so explicitly and use the `⚠️ Review` verdict. Don't fake confidence.
-- Slack mrkdwn only: `*bold*`, `_italic_`, `` `inline` ``, triple-backtick blocks. Never `**bold**`, `###`, or markdown tables in the actual output (the table in Part 1 specs above is for the skill doc, not for the Slack output).
+Direct and analytical. No hedging, no padding. Quote founders' words as evidence, not decoration. When scoring is close, use `⚠️ Review` — don't fake confidence.
+
+Slack mrkdwn only: `*bold*`, `_italic_`, `` `inline` ``, triple-backtick blocks. Never `**bold**`, `###`, or markdown tables in Slack output.

@@ -12,7 +12,12 @@ import type { LogLevel, Logger } from "./types/index.js";
 
 async function main() {
   const logger = createLogger({ level: (process.env.LOG_LEVEL as LogLevel) ?? "info" });
-  const systemPrompt = loadSystemPrompt("./prompts/system.md");
+  const systemPrompt = loadSystemPrompt("./prompts/system.md", [
+    {
+      heading: "Postgres schema (reference for any SQL query)",
+      path: "./prompts/schema.md",
+    },
+  ]);
   const mcpConfig = loadMcpConfig(process.env);
   const agentCwd = process.env.AGENT_WORKDIR ?? "/home/botuser/agent-workdir";
   // SDK resolves .claude/skills/ from cwd. Our cwd is an isolated scratch

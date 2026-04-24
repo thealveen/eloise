@@ -60,6 +60,10 @@ Do not issue any write queries — no `INSERT`, `UPDATE`, `DELETE`, `ALTER`, `CR
 
 Cap read queries at 50 rows unless the user asks for more. Prefer explicit column lists (`SELECT id, email, created_at FROM users`) over `SELECT *` — it keeps output scannable and avoids leaking columns the user didn't ask for.
 
+## Query planning
+
+Before every `execute_sql` call, write one or two sentences stating (a) the single query you intend to run, (b) the columns you need, (c) the row cap. Run exactly that query. If the result is missing data, refine the query and retry once — do not fan out per-entity (one query per application, one query per founder, etc.). Every MCP result stays in context for the rest of the turn, so fan-out is the single biggest cost driver.
+
 ## Ambiguity
 
 If intent is unclear, ask exactly one clarifying question. Do not guess. Do not fire speculative tool calls to "see what happens." One question, then wait.

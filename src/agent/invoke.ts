@@ -254,6 +254,7 @@ function traceMessage(msg: unknown, logger: Logger): string | undefined {
         logger.debug("sdk tool_use", {
           tool_name: toolName,
           tool_use_id: toolUseId,
+          input_preview: previewToolInput(block.input),
         });
         lastTool = toolName;
       } else if (block.type === "text" && typeof block.text === "string") {
@@ -274,4 +275,21 @@ function traceMessage(msg: unknown, logger: Logger): string | undefined {
     });
   }
   return undefined;
+}
+
+// Give debug logs enough of the tool's input to identify what the model is
+// doing without blowing out log size. For MCP SQL calls, `input.query`
+// carries the statement — that's the field we actually need to see on a
+// fanout-investigation turn. Fall back to a stringified dump for anything
+// else. Capped at 500 chars so a giant JSON body can't dominate a log line.
+function previewToolInput(input: unknown): string | undefined {
+  if (input === undefined || input === null) return undefined;
+  if (isRecord(input) && typeof input.query === "string") {
+    return input.query.slice(0, 500);
+  }
+  try {
+    return JSON.stringify(input).slice(0, 500);
+  } catch {
+    return undefined;
+  }
 }

@@ -12,7 +12,7 @@ Rate founders in the Iterative database on two independent axes: AI fluency and 
 
 If the user pasted application text inline, use that directly — don't issue a query.
 
-If the user named a cohort, founder, company, or quantity, pull the data in **one JOINed query** — never fan out per-application. The query must stay small enough that the SDK doesn't persist the result to disk; if it does, scoring needs the whole payload back in context and you're better off re-running a tighter query than parsing the persisted file.
+If the user named a cohort, founder, company, or quantity, pull the data in **one JOINed query** — never fan out per-application. If the result is large enough that the SDK persists it to disk, the file is clean JSON (an array of row objects) — read it directly with `Read` or `jq`. Do not re-query with smaller truncation.
 
 Query shape:
 
@@ -31,8 +31,6 @@ current_solution, progress, journey, anything_else
 Boolean/number/select answers don't drive the rubric — skip them. Pull `person.bio`, `person.first_name`, `person.last_name`, `person.email`, `person.location`, `company.name`, `company.location`, `cohort.shortname` directly from the base tables (not through `answer`).
 
 If an application is too sparse to rate (key fields empty, under ~500 words of substance), score it Level 0 on the relevant axis with `confidence: high` and note `insufficient data`.
-
-If persistence triggers despite this shape, halve `LEFT()` to 1000 and drop the batch to 3 apps — don't reach for `Bash` to parse the persisted file for scoring.
 
 Always cite founder name, company, and cohort in the output.
 

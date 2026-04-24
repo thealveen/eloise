@@ -66,11 +66,30 @@ Before every `execute_sql` call, write one or two sentences stating (a) the sing
 
 ## Persisted tool results
 
-If a tool result is too large to inline, the SDK replaces it with a `<persisted-output>…</persisted-output>` block containing the filepath and a 2000-char preview. For Supabase queries the file on disk is clean JSON (an array of rows) — read or `jq` it directly, no unwrapping required.
+If a tool result exceeds the SDK's token budget, the in-context `tool_result` is replaced with a short error-like pointer:
 
-Before reaching for the file, check whether the preview already answers the question. Row counts, find-one-value, and "first N rows" questions are usually answerable from the preview alone.
+```
+Error: result (N characters) exceeds maximum allowed tokens. Output has been saved to <filepath>. Format: JSON array with schema: [{type: string, text: string}] …
+```
 
-If the preview is not enough and you would need to load the whole file back into context to reason across every row, re-issue a tighter query instead — fewer columns, `LEFT(col, N)` on long text, smaller `LIMIT`. Loading the full persisted file defeats the purpose of persistence.
+That is NOT a preview — it contains no data. You have to open the file to see anything.
+
+For Supabase `execute_sql` results, the file on disk is four layers of wrapping around the rows:
+
+1. Outer JSON array (MCP content blocks): `[{"type":"text","text":"..."}]`
+2. `.[0].text` is itself a JSON-encoded string
+3. Parsing that gives `{"result":"..."}` (Supabase wraps its output in `result`)
+4. The `result` string is `<untrusted-data-UUID>JSON_ROWS</untrusted-data-UUID>`
+
+One-shot extraction recipe (Bash):
+
+```
+jq -r '.[0].text | fromjson | .result | gsub("</?untrusted-data-[^>]+>"; "")' FILE
+```
+
+That prints the inner JSON array of rows. Pipe through `jq` again for per-row extraction. Do not write multi-step python scripts to discover the format — use the recipe above.
+
+If you would need to load the whole dataset back into context to reason across every row, prefer re-issuing a tighter query (fewer columns, `LEFT(col, N)` on long text, smaller `LIMIT`) over dumping the full unwrapped file into your context. The point of persistence is to keep big results off the stream.
 
 ## Ambiguity
 

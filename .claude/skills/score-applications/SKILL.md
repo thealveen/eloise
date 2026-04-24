@@ -12,7 +12,7 @@ Rate founders in the Iterative database on two independent axes: AI fluency and 
 
 If the user pasted application text inline, use that directly — don't issue a query.
 
-If the user named a cohort, founder, company, or quantity, pull the data in **one JOINed query** — never fan out per-application. If the result is large enough that the SDK persists it to disk, the file is clean JSON (an array of row objects) — read it directly with `Read` or `jq`. Do not re-query with smaller truncation.
+If the user named a cohort, founder, company, or quantity, pull the data in **one JOINed query** — never fan out per-application. If the result is large enough that the SDK persists it to disk, unwrap it with the `jq` recipe in the system prompt's "Persisted tool results" section — one Bash call gets you the rows. Do not re-query with smaller truncation.
 
 Query shape:
 

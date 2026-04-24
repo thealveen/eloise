@@ -1,5 +1,5 @@
 ---
-name: score-applications
+name: pod-3-icp-scorer
 description: Rate Iterative founders/applications on AI fluency and customer savvy against the rubric below. Invoke when the user asks to score, rate, or evaluate applications or founders against these two axes.
 argumentHint: "<cohort-or-filter, e.g. 'W25' or 'last 10 apps'>"
 ---
@@ -10,16 +10,38 @@ Rate founders in the Iterative database on two independent axes: AI fluency and 
 
 ## How to gather input
 
-If the user pasted application text inline, use that directly — don't issue a query.
+If the user pasted application text inline, use that directly — don't query.
 
-If the user named a cohort, founder, company, or quantity, pull the data in **one JOINed query** — never fan out per-application. If the result is large enough that the SDK persists it to disk, unwrap it with the `jq` recipe in the system prompt's "Persisted tool results" section — one Bash call gets you the rows. Do not re-query with smaller truncation.
+Otherwise: first determine N (how many apps match), then chunk the fetch.
 
-Query shape:
+### Step 1 — Count
+
+Issue one lightweight count query to get N. Example for a cohort request:
+
+```
+SELECT COUNT(*) FROM application a
+JOIN cohort co ON co.id = a.cohort_id
+WHERE co.shortname = 'W26';
+```
+
+Skip the count if:
+- The user named a specific founder/company (N = 1).
+- The user didn't specify a scope — default N = 5 (most recent).
+
+### Step 2 — Chunk
+
+- **N ≤ 5**: one full-data query, done.
+- **5 < N ≤ 20**: pull all N in sequential chunks of 5 via `LIMIT 5 OFFSET k` (e.g. N=9 → one query with `LIMIT 5 OFFSET 0`, then one with `LIMIT 5 OFFSET 5`). Assemble rows across chunks, then score the full set as one batch.
+- **N > 20**: pull the first 20 in chunks of 5. Tell the user the total was N and they should re-run for the remainder.
+
+Never fan out per-application. Each chunk is exactly one JOINed query.
+
+### Step 3 — Query shape (per chunk)
 
 - Select from `application` + `person` + `company`, left-joining `answer` → `question` filtered to the scoring-signal keys only (see whitelist below).
-- Truncate free-text answers inline: `LEFT(a.value_text, 2000) AS value_text`. 2000 chars is enough to apply the craft-vs-magic test; full length is gravy.
-- Default batch cap: **10 applications**. Larger batches risk persistence + re-query cost — if the user explicitly asks for more, go up to 20 and warn them.
+- Truncate free-text answers inline: `LEFT(a.value_text, 1500) AS value_text`. 1500 chars is enough to apply the craft-vs-magic test and keeps a 5-row chunk comfortably under the SDK's persistence threshold.
 - Order by `application.created_at DESC` unless the user specified otherwise.
+- If a chunk still persists (unusually long answers), unwrap it with the `jq` recipe in the system prompt's "Persisted tool results" section — one Bash call gets you the rows. Do not re-query with smaller truncation.
 
 Question-key whitelist (from `prompts/schema.md` question catalog — these are the textarea/narrative fields that carry scoring signal):
 

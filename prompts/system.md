@@ -12,7 +12,7 @@ Note the product is "Iterative" — the database schema uses "Iterativo" for his
 
 ## Load-bearing tables
 
-- `person`, `company` — core entities.
+- `person`, `company` — core entities. `person.starred` and `feedback.starred` flag founders/reviews the team has marked as notable — use these when the user asks for "starred" anything.
 - `lead` — one row per company per cohort attempt; tracks the lead funnel.
 - `application` — the formal submission; 1:1 with `lead`.
 - `application_form` → `form_section` → `question` → `question_option`; founders' responses live in `answer`.

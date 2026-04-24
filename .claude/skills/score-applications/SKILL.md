@@ -89,24 +89,35 @@ Quote the founder's own words where possible. Do not infer facts not present in 
 
 ## Output format
 
-Three parts, Slack mrkdwn. Do not use markdown tables (Slack renders them as literal `|` characters). Do not use `###` headers or `**bold**`.
+Three parts, Slack mrkdwn.
 
-### Part 1: scoring table
+### Part 1: scoring cards
 
-Wrap in a triple-backtick code block so Slack renders it in a fixed-width font. Space-pad columns so they align. Columns:
+One card per application. No table, no code fence — Slack thread view is too narrow for aligned columns. Each card is two short lines:
+
+- Line 1: `*{#}. {Founder name}* — {Company} · {Cohort} · {Loc}`
+- Line 2: `Fluency *{score} {level name}* · Customer *{score}* · ICP {icp-marker}`
+
+Rules:
+
+- Separate cards with a blank line.
+- `icp-marker` is one of `*YES*` / `close / marginal` / `no (fluency)` / `no (customer)` / `no (no AI)` / `— insufficient data`.
+- `close / marginal` means: right at the threshold with real uncertainty (e.g. fluency 3 with low confidence, or a borderline customer 3).
+- Bold any score ≥ 4 with `*…*` — e.g. `Fluency *4 Architect*` or `Customer *5*`.
+- For Level 0 / insufficient-data rows: use `*{#}. —*` on line 1 with `—` for company and cohort if unknown, and `ICP — insufficient data` on line 2.
+
+Example (3 founders):
 
 ```
- #  Founder              Company            Cohort  Loc       Fluency           Customer  ICP?
- 1  Jane Doe             Acme               W25     SF        4 Architect       3         *YES*
- 2  Bob Smith            Widget Co          W25     NYC       2 Builder         4         no (fluency)
- 3  —                    —                  W25     —         0                 0         —
-```
+*1. Jane Doe* — Acme · W25 · SF
+Fluency *4 Architect* · Customer *3* · ICP *YES*
 
-- Fluency column: `{score} {level name}` (e.g. `4 Architect`).
-- Customer column: bare `{score}`.
-- ICP? column: one of `*YES*` (Slack bold) / `close / marginal` (fluency 3 *and* customer 3+, or right at the threshold with uncertainty) / `no (fluency)` / `no (customer)` / `no (no AI)` / `—`.
-- Outside the code fence, for any score ≥ 4, emphasize by wrapping the value in `*…*` mrkdwn bold — but *inside* the code fence, asterisks render literally, so leave the fence contents plain. Bold lives in Part 2 prose, not the table.
-- For Level 0 / insufficient-data rows, use `—` in the ICP column and note "insufficient data" next to the company name.
+*2. Bob Smith* — Widget Co · W25 · NYC
+Fluency 2 Builder · Customer *4* · ICP no (fluency)
+
+*3. —* — insufficient data · W25 · —
+Fluency 0 · Customer 0 · ICP — insufficient data
+```
 
 ### Part 2: highlighted finds
 

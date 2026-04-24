@@ -12,12 +12,10 @@ Rate founders in the Iterative database on two independent axes: AI fluency and 
 
 If the user named a cohort, founder, company, or quantity:
 
-- Query `application` filtered by `cohort` (e.g. `W25`) or joined to `person`/`company` on the named entity.
-- Join to `answer` via `question` → `form_section` → `application_form` to get the founder's written responses.
-- Join to `person` (founder) and `company` for display fields and location.
-- Pull `created_at` for cohort/time filters.
-- If the user asks for "N applications" without a filter, sort by `created_at DESC` and cap to N.
-- Cap at ~50 rows per response. If the user asks for more, score the first 50 and offer to continue.
+- Pull all the data in a **single JOINed query**. Do not fetch the application list and then query answers per-application — that fan-out will time out on anything past ~5 applications.
+- The query should select `application` + `person` (founder) + `company` + all `answer` rows joined via `question` → `form_section` → `application_form`, filtered by `cohort` or whatever the user named, ordered `application.created_at DESC`.
+- If the user asks for "N applications" without a filter, sort by `application.created_at DESC` and cap to N.
+- **Default batch cap is 10 applications per response.** The scoring loop is token-heavy and a turn timeout will kill the whole batch. If the user explicitly asks for more, go up to ~30, then offer to continue with the next chunk.
 
 If the user pasted application text inline, use that directly — don't issue a query.
 

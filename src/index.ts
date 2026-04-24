@@ -25,7 +25,7 @@ async function main() {
   const agentRunner = createAgentRunner({
     systemPrompt,
     mcpConfig,
-    timeoutMs: 120_000,
+    timeoutMs: parseTimeoutMs(process.env.AGENT_TIMEOUT_MS, 300_000),
     cwd: agentCwd,
     anthropicApiKey: requireEnv("ANTHROPIC_API_KEY"),
     model: process.env.AGENT_MODEL,
@@ -46,6 +46,15 @@ function requireEnv(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`missing env var: ${name}`);
   return v;
+}
+
+function parseTimeoutMs(raw: string | undefined, fallback: number): number {
+  if (!raw) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    throw new Error(`invalid AGENT_TIMEOUT_MS: ${raw}`);
+  }
+  return n;
 }
 
 function ensureSkillsSymlink(deps: {

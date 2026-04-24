@@ -12,47 +12,93 @@ Rate founders in the Iterative database on two independent axes: AI Fluency and 
 
 If the user pasted application text inline, use that directly — don't query.
 
-Otherwise: first determine N (how many apps match), then chunk the fetch.
+Otherwise: pick a filter, count with it, decide chunking, execute. One filter, one skeleton, no exploration.
 
-### Step 1 — Count
+### Step 1 — Pick the filter
 
-Issue one lightweight count query to get N. Example for a cohort request:
+Map the user's request to a `<filter>` from this cookbook. Combine with `AND` as needed.
+
+- **In cohort:** `cohort_id = (SELECT id FROM cohort WHERE shortname = 'W26')`
+- **Accepted in cohort:** the above + `AND evaluation_decision = 'accepted'`
+- **Rejected in cohort:** the above + `AND evaluation_decision = 'rejected'`
+- **Reached stage X (any outcome):** `id IN (SELECT application_id FROM evaluation_stage_change esc JOIN evaluation_stage es ON es.id = esc.to_stage_id WHERE es.slug = '<stage-slug>')`
+- **Rejected at stage X:** the above + `AND evaluation_decision = 'rejected'`
+- **Starred founders:** `applicant_person_id IN (SELECT id FROM person WHERE is_starred)`
+- **Specific founder:** `applicant_person_id = '<uuid>'`
+- **Specific company:** `company_id = '<uuid>'`
+
+Stage slugs: `inbox_review`, `first_interview`, `final_interview`, `decision_pending`, `offer_extended`. For "accepted" / "rejected" terminals, use `evaluation_decision` directly — don't filter via `evaluation_stage_change`.
+
+Use `evaluation_stage_change` to identify apps that *reached* a stage, not `furthest_stage_id` — the latter only captures the latest stage, not the journey.
+
+If no cookbook entry matches, write a new WHERE in the same shape. Do not issue probing queries to figure out the schema.
+
+### Step 2 — Count
+
+Run exactly one count with the chosen `<filter>`:
 
 ```
-SELECT COUNT(*) FROM application a
-JOIN cohort co ON co.id = a.cohort_id
-WHERE co.shortname = 'W26';
+SELECT COUNT(*) FROM application
+WHERE <filter> AND deleted_at IS NULL;
 ```
 
 Skip the count if:
 - The user named a specific founder/company (N = 1).
 - The user didn't specify a scope — default N = 5 (most recent).
 
-### Step 2 — Chunk
+### Step 3 — Decide chunking
 
-- **N ≤ 5**: one full-data query, done.
-- **5 < N ≤ 20**: pull all N in sequential chunks of 5 via `LIMIT 5 OFFSET k` (e.g. N=9 → one query with `LIMIT 5 OFFSET 0`, then one with `LIMIT 5 OFFSET 5`). Assemble rows across chunks, then score the full set as one batch.
-- **N > 20**: pull the first 20 in chunks of 5. Tell the user the total was N and they should re-run for the remainder.
+- **N ≤ 5**: one chunk, done.
+- **5 < N ≤ 20**: sequential chunks of 5 via `OFFSET 0, 5, 10, 15`. Assemble all rows across chunks, then score the full set as one batch.
+- **N > 20**: pull the first 20 in four chunks of 5. Tell the user the total was N and they should re-run for the remainder.
 
-Never fan out per-application. Each chunk is exactly one JOINed query.
+Never fan out per-application. Each chunk is one query following the skeleton below.
 
-### Step 3 — Query shape (per chunk)
+### Step 4 — Chunk query skeleton
 
-- Select from `application` + `person` + `company`, left-joining `answer` → `question` filtered to the scoring-signal keys only (see whitelist below).
-- Truncate free-text answers inline: `LEFT(a.value_text, 1500) AS value_text`. 1500 chars is enough to apply the craft-vs-magic test and keeps a 5-row chunk comfortably under the SDK's persistence threshold.
-- Order by `application.created_at DESC` unless the user specified otherwise.
-- If a chunk still persists (unusually long answers), unwrap it with the `jq` recipe in the system prompt's "Persisted tool results" section — one Bash call gets you the rows. Do not re-query with smaller truncation.
+Use this exact shape. Only `<filter>` and the OFFSET change between chunks.
 
-Question-key whitelist (from `prompts/schema.md` question catalog — these are the textarea/narrative fields that carry scoring signal):
-
+```sql
+WITH target AS (
+  SELECT id FROM application
+  WHERE <filter>
+    AND deleted_at IS NULL
+  ORDER BY created_at DESC
+  LIMIT 5 OFFSET 0          -- 0, then 5, 10, 15 for later chunks
+)
+SELECT a.id,
+       p.first_name, p.last_name, p.email, p.bio, p.location AS person_location,
+       co.shortname AS cohort,
+       c.name AS company_name, c.location AS company_location,
+       MAX(CASE WHEN q.key='company_description' THEN LEFT(ans.value_text,1500) END) AS company_description,
+       MAX(CASE WHEN q.key='problem'             THEN LEFT(ans.value_text,1500) END) AS problem,
+       MAX(CASE WHEN q.key='validation'          THEN LEFT(ans.value_text,1500) END) AS validation,
+       MAX(CASE WHEN q.key='market_size'         THEN LEFT(ans.value_text,1500) END) AS market_size,
+       MAX(CASE WHEN q.key='unique_insight'      THEN LEFT(ans.value_text,1500) END) AS unique_insight,
+       MAX(CASE WHEN q.key='current_solution'    THEN LEFT(ans.value_text,1500) END) AS current_solution,
+       MAX(CASE WHEN q.key='progress'            THEN LEFT(ans.value_text,1500) END) AS progress,
+       MAX(CASE WHEN q.key='journey'             THEN LEFT(ans.value_text,1500) END) AS journey,
+       MAX(CASE WHEN q.key='anything_else'       THEN LEFT(ans.value_text,1500) END) AS anything_else
+FROM application a
+JOIN target t        ON t.id = a.id
+JOIN person p        ON p.id = a.applicant_person_id
+JOIN company c       ON c.id = a.company_id
+JOIN cohort co       ON co.id = a.cohort_id
+LEFT JOIN answer ans ON ans.application_id = a.id
+LEFT JOIN question q ON q.id = ans.question_id
+GROUP BY a.id, p.id, c.id, co.id
+ORDER BY a.created_at DESC;
 ```
-company_description, problem, validation, market_size, unique_insight,
-current_solution, progress, journey, anything_else
-```
 
-Boolean/number/select answers don't drive the rubric — skip them. Pull `person.bio`, `person.first_name`, `person.last_name`, `person.email`, `person.location`, `company.name`, `company.location`, `cohort.shortname` directly from the base tables (not through `answer`).
+Why this shape:
+- The `target` CTE applies `LIMIT 5` to applications (one row per app), not to the post-join exploded rows.
+- `MAX(CASE WHEN q.key=...)` pivots the whitelisted answers into columns — one row per app.
+- `LEFT(...,1500)` keeps a 5-app chunk under the SDK's ~100k-char persistence threshold.
+- The whitelist is locked to: `company_description, problem, validation, market_size, unique_insight, current_solution, progress, journey, anything_else`. Boolean/number/select answers don't drive the rubric.
 
-If an application is too sparse to rate (key fields empty, under ~500 words of substance), score it Level 0 on the relevant axis with `confidence: high` and note `insufficient data`.
+If a chunk still persists (rare, only on unusually long answers), unwrap it with the `jq` recipe in the system prompt's "Persisted tool results" section. Do not re-query with smaller truncation.
+
+If an application row is too sparse to rate (key fields empty, under ~500 words of substance), score it Level 0 on the relevant axis with `confidence: high` and note `insufficient data`.
 
 Always cite founder name, company, and cohort in the output.
 

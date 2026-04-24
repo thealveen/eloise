@@ -39,6 +39,8 @@ export type RawSlackEvent = {
   text?: string;
   bot_id?: string;
   subtype?: string;
+  // Present on `message_deleted` events: the ts of the deleted message.
+  deleted_ts?: string;
 };
 
 // Slack user mentions in message text are encoded as `<@U12345678>`. We strip
@@ -88,6 +90,28 @@ export function normalize(raw: RawSlackEvent, botUserId: string | null): Normali
     user_id: raw.user,
     text,
   };
+}
+
+/**
+ * Deletion events ride on `message` with `subtype: "message_deleted"`, which
+ * `normalize()` filters out (deletes aren't normal turns). This sibling
+ * function extracts just what the deletion path needs: the channel and the
+ * `ts` of the message that disappeared.
+ *
+ * Returns `null` unless the event is a genuine user-driven deletion with
+ * both `channel` and `deleted_ts` populated.
+ */
+export type NormalizedDeletion = {
+  channel_id: string;
+  deleted_ts: string;
+};
+
+export function normalizeDeletion(
+  raw: RawSlackEvent,
+): NormalizedDeletion | null {
+  if (raw.subtype !== "message_deleted") return null;
+  if (!raw.channel || !raw.deleted_ts) return null;
+  return { channel_id: raw.channel, deleted_ts: raw.deleted_ts };
 }
 
 /**

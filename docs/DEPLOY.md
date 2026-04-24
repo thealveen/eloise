@@ -183,6 +183,8 @@ In Slack, invite the bot to a channel and mention it:
 
 Expected: within a second or two the bot adds a 👀 reaction to your message; within ~30 seconds, it posts a reply in the same thread and swaps the reaction to ✅.
 
+If you delete the original @mention, the bot cleans up after itself: it deletes every reply it posted in that thread and drops the session row, so the thread disappears entirely instead of leaving orphan bot messages. No manifest or scope changes are needed — `message_deleted` rides on the existing `message.*` subscriptions and `chat:write` covers `chat.delete` on bot-authored messages.
+
 If nothing happens: `pm2 logs slack-bot` and check the troubleshooting table below.
 
 ## Deploying updates

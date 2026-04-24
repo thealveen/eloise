@@ -58,9 +58,15 @@ export function createBoltApp(deps: {
   // message: fires for DMs (`message.im`) and channel messages
   // (`message.channels`). The handler applies the K4 channel-non-mention
   // gate to filter channel events down to thread replies on existing
-  // sessions.
+  // sessions. `message_deleted` rides on the same subscription and is
+  // routed to the cascade-delete path instead.
   app.message(async ({ message, client }) => {
-    await deps.handler.handle(message as unknown as RawSlackEvent, client, "message");
+    const raw = message as unknown as RawSlackEvent;
+    if (raw.subtype === "message_deleted") {
+      await deps.handler.handleDeletion(raw, client);
+      return;
+    }
+    await deps.handler.handle(raw, client, "message");
   });
 
   // Bolt routes errors that bubble out of listeners here. Anything that

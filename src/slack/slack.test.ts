@@ -14,6 +14,7 @@ import type {
   AgentError,
   AgentResult,
   AgentRunner,
+  BotReplyStore,
   Logger,
   NormalizedEvent,
   SessionHandle,
@@ -22,7 +23,12 @@ import type {
 import { createDedup } from "./dedup.js";
 import { formatErrorMessage } from "./format.js";
 import { createEventHandler, type SlackClient } from "./handler.js";
-import { isThreadReply, normalize, type RawSlackEvent } from "./normalize.js";
+import {
+  isThreadReply,
+  normalize,
+  normalizeDeletion,
+  type RawSlackEvent,
+} from "./normalize.js";
 
 // ---------- shared test fixtures ----------
 
@@ -54,10 +60,42 @@ function makeAgentRunner(result: AgentResult): AgentRunner {
   return { run: vi.fn().mockResolvedValue(result) };
 }
 
+type FakeBotReplyStore = BotReplyStore & {
+  calls: { record: string[][]; drop: string[][] };
+  peek(channel_id: string, thread_ts: string): string[];
+};
+
+function makeBotReplyStore(): FakeBotReplyStore {
+  const rows = new Map<string, string[]>();
+  const key = (c: string, t: string) => `${c}::${t}`;
+  const calls: FakeBotReplyStore["calls"] = { record: [], drop: [] };
+  return {
+    calls,
+    record(channel_id, thread_ts, reply_ts) {
+      calls.record.push([channel_id, thread_ts, reply_ts]);
+      const k = key(channel_id, thread_ts);
+      const list = rows.get(k) ?? [];
+      if (!list.includes(reply_ts)) list.push(reply_ts);
+      rows.set(k, list);
+    },
+    list(channel_id, thread_ts) {
+      return rows.get(key(channel_id, thread_ts))?.slice() ?? [];
+    },
+    drop(channel_id, thread_ts) {
+      calls.drop.push([channel_id, thread_ts]);
+      rows.delete(key(channel_id, thread_ts));
+    },
+    peek(channel_id, thread_ts) {
+      return rows.get(key(channel_id, thread_ts))?.slice() ?? [];
+    },
+  };
+}
+
 function makeClient(opts: { placeholderTs?: string } = {}): SlackClient & {
   chat: {
     postMessage: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
+    delete: ReturnType<typeof vi.fn>;
   };
   reactions: {
     add: ReturnType<typeof vi.fn>;
@@ -73,6 +111,7 @@ function makeClient(opts: { placeholderTs?: string } = {}): SlackClient & {
         .fn()
         .mockResolvedValue({ ok: true, ts: opts.placeholderTs ?? "posted-ts" }),
       update: vi.fn().mockResolvedValue({ ok: true }),
+      delete: vi.fn().mockResolvedValue({ ok: true }),
     },
     reactions: {
       add: vi.fn().mockResolvedValue({ ok: true }),
@@ -206,6 +245,36 @@ describe("isThreadReply", () => {
   });
 });
 
+describe("normalizeDeletion", () => {
+  it("returns channel + deleted_ts for a message_deleted event", () => {
+    expect(
+      normalizeDeletion({
+        type: "message",
+        subtype: "message_deleted",
+        channel: "C1",
+        deleted_ts: "1700000000.000100",
+      }),
+    ).toEqual({ channel_id: "C1", deleted_ts: "1700000000.000100" });
+  });
+
+  it("returns null for non-deletion subtypes", () => {
+    expect(normalizeDeletion({ subtype: "bot_message", channel: "C1" })).toBeNull();
+    expect(
+      normalizeDeletion({ subtype: "message_changed", channel: "C1", deleted_ts: "x" }),
+    ).toBeNull();
+    expect(normalizeDeletion({ channel: "C1" })).toBeNull();
+  });
+
+  it("returns null when channel or deleted_ts is missing", () => {
+    expect(
+      normalizeDeletion({ subtype: "message_deleted", deleted_ts: "x" }),
+    ).toBeNull();
+    expect(
+      normalizeDeletion({ subtype: "message_deleted", channel: "C1" }),
+    ).toBeNull();
+  });
+});
+
 // ---------- formatErrorMessage ----------
 
 describe("formatErrorMessage", () => {
@@ -215,6 +284,11 @@ describe("formatErrorMessage", () => {
     { error: { kind: "api_error", message: "boom" }, expected: "Something went wrong." },
     { error: { kind: "mcp_error", message: "boom" }, expected: "Something went wrong." },
     { error: { kind: "unknown", message: "boom" }, expected: "Something went wrong." },
+    {
+      error: { kind: "auth_error", message: "Invalid API key" },
+      expected:
+        "Claude API rejected the request — usage limit or key issue. Ping Alvin.",
+    },
   ];
 
   for (const { error, expected } of cases) {
@@ -268,6 +342,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -382,6 +457,41 @@ describe("event handler", () => {
     );
   });
 
+  it("AgentError auth_error -> posts friendly auth message with ❌ and logs error_message", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeAgentRunner({
+      ok: false,
+      error: { kind: "auth_error", message: "Invalid API key · Please run /login" },
+    });
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
+    });
+    const client = makeClient();
+
+    await handler.handle(channelMention(), client, "mention");
+
+    expect(client.reactions.add).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "x" }),
+    );
+    expect(client.chat.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Claude API rejected the request — usage limit or key issue. Ping Alvin.",
+      }),
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      "turn error",
+      expect.objectContaining({
+        status: "error",
+        error_message: expect.stringContaining("auth_error"),
+      }),
+    );
+  });
+
   it("empty text response: posts fallback, adds ❌, logs turn error with text_length:0", async () => {
     const logger = makeLogger();
     const sessionResolver = makeSessionResolver();
@@ -400,6 +510,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -447,6 +558,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -475,6 +587,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -499,6 +612,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -525,6 +639,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -548,6 +663,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -583,6 +699,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -623,6 +740,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -661,6 +779,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -686,6 +805,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -725,6 +845,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -733,6 +854,166 @@ describe("event handler", () => {
 
     expect(sessionResolver.resolve).not.toHaveBeenCalled();
     expect(agentRunner.run).not.toHaveBeenCalled();
+  });
+});
+
+// ---------- reply ts recording ----------
+
+describe("bot reply recording", () => {
+  it("records the ts on the success postMessage path (no heartbeat)", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeAgentRunner({
+      ok: true,
+      response: { text: "hello", duration_ms: 1, tool_calls: 0 },
+    });
+    const replies = makeBotReplyStore();
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: replies,
+    });
+    const client = makeClient({ placeholderTs: "reply-ts" });
+
+    await handler.handle(channelMention(), client, "mention");
+
+    expect(replies.peek("C123", "1700000000.000100")).toEqual(["reply-ts"]);
+  });
+
+  it("records the ts on the error postMessage path (resolver throws)", async () => {
+    const logger = makeLogger();
+    const sessionResolver: SessionResolver = {
+      resolve: vi.fn().mockRejectedValue(new Error("sqlite died")),
+    };
+    const agentRunner = makeAgentRunner({
+      ok: true,
+      response: { text: "x", duration_ms: 1, tool_calls: 0 },
+    });
+    const replies = makeBotReplyStore();
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: replies,
+    });
+    const client = makeClient({ placeholderTs: "err-ts" });
+
+    await handler.handle(channelMention(), client, "mention");
+
+    expect(replies.peek("C123", "1700000000.000100")).toEqual(["err-ts"]);
+  });
+});
+
+// ---------- handleDeletion ----------
+
+describe("handleDeletion", () => {
+  function buildHandler(replies = makeBotReplyStore()) {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeAgentRunner({
+      ok: true,
+      response: { text: "ok", duration_ms: 1, tool_calls: 0 },
+    });
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: replies,
+    });
+    return { handler, logger, sessionResolver, replies };
+  }
+
+  const deleteEvent: RawSlackEvent = {
+    type: "message",
+    subtype: "message_deleted",
+    channel: "C123",
+    deleted_ts: "1700000000.000100",
+  };
+
+  it("deletes every recorded reply ts, drops the reply rows, drops the session", async () => {
+    const { handler, sessionResolver, replies } = buildHandler();
+    replies.record("C123", "1700000000.000100", "r1");
+    replies.record("C123", "1700000000.000100", "r2");
+    const client = makeClient();
+
+    await handler.handleDeletion(deleteEvent, client);
+
+    expect(client.chat.delete).toHaveBeenCalledTimes(2);
+    expect(client.chat.delete).toHaveBeenCalledWith({ channel: "C123", ts: "r1" });
+    expect(client.chat.delete).toHaveBeenCalledWith({ channel: "C123", ts: "r2" });
+    expect(replies.peek("C123", "1700000000.000100")).toEqual([]);
+    expect(sessionResolver.drop).toHaveBeenCalledWith("C123:1700000000.000100");
+  });
+
+  it("logs a single summary line with deleted_count", async () => {
+    const { handler, logger, replies } = buildHandler();
+    replies.record("C123", "1700000000.000100", "r1");
+    replies.record("C123", "1700000000.000100", "r2");
+    const client = makeClient();
+
+    await handler.handleDeletion(deleteEvent, client);
+
+    expect(logger.info).toHaveBeenCalledWith(
+      "thread deleted cleanup",
+      expect.objectContaining({
+        channel_id: "C123",
+        thread_ts: "1700000000.000100",
+        deleted_count: 2,
+        failed_count: 0,
+      }),
+    );
+  });
+
+  it("is a no-op when the deleted ts isn't a tracked thread root", async () => {
+    const { handler, sessionResolver, replies } = buildHandler();
+    // Record replies on a *different* thread so the store is non-empty but
+    // the deletion doesn't match any row.
+    replies.record("C123", "1700000000.999999", "other");
+    const client = makeClient();
+
+    await handler.handleDeletion(deleteEvent, client);
+
+    expect(client.chat.delete).not.toHaveBeenCalled();
+    expect(sessionResolver.drop).not.toHaveBeenCalled();
+  });
+
+  it("one chat.delete rejection does not abort the rest; counts failures", async () => {
+    const { handler, logger, sessionResolver, replies } = buildHandler();
+    replies.record("C123", "1700000000.000100", "r1");
+    replies.record("C123", "1700000000.000100", "r2");
+    const client = makeClient();
+    client.chat.delete.mockRejectedValueOnce(new Error("cant_delete"));
+
+    await handler.handleDeletion(deleteEvent, client);
+
+    // First attempt failed, second succeeded — both were attempted.
+    expect(client.chat.delete).toHaveBeenCalledTimes(2);
+    // Reply rows still dropped; session still dropped.
+    expect(replies.peek("C123", "1700000000.000100")).toEqual([]);
+    expect(sessionResolver.drop).toHaveBeenCalledWith("C123:1700000000.000100");
+    expect(logger.info).toHaveBeenCalledWith(
+      "thread deleted cleanup",
+      expect.objectContaining({ deleted_count: 1, failed_count: 1 }),
+    );
+  });
+
+  it("ignores non-deletion events", async () => {
+    const { handler, replies } = buildHandler();
+    replies.record("C123", "1700000000.000100", "r1");
+    const client = makeClient();
+
+    await handler.handleDeletion(
+      { type: "message", subtype: "bot_message", channel: "C123" },
+      client,
+    );
+
+    expect(client.chat.delete).not.toHaveBeenCalled();
+    // Row still there because nothing matched.
+    expect(replies.peek("C123", "1700000000.000100")).toEqual(["r1"]);
   });
 });
 
@@ -751,6 +1032,7 @@ async function assertErrorMapping(
     agentRunner,
     logger,
     dedup: createDedup({ ttlMs: 60_000 }),
+    botReplyStore: makeBotReplyStore(),
   });
   const client = makeClient();
 
@@ -829,6 +1111,7 @@ describe("progress poster", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient({ placeholderTs: "ph-ts" });
 
@@ -870,6 +1153,7 @@ describe("progress poster", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -895,6 +1179,7 @@ describe("progress poster", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient({ placeholderTs: "ph-ts" });
 
@@ -915,7 +1200,7 @@ describe("progress poster", () => {
     );
   });
 
-  it("finalize falls back to postMessage if chat.update rejects", async () => {
+  it("finalize falls back to postMessage if chat.update rejects (both ts recorded)", async () => {
     const logger = makeLogger();
     const sessionResolver = makeSessionResolver();
     const agentRunner = makeRunnerWithProgress({
@@ -925,13 +1210,21 @@ describe("progress poster", () => {
         response: { text: "final", duration_ms: 10_000, tool_calls: 2 },
       },
     });
+    const replies = makeBotReplyStore();
     const handler = createEventHandler({
       sessionResolver,
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: replies,
     });
+    // The placeholder post returns ph-ts; the fallback post returns
+    // fallback-ts. Default client mock returns the same ts for every call,
+    // so override chat.postMessage to return different ts's in order.
     const client = makeClient({ placeholderTs: "ph-ts" });
+    client.chat.postMessage
+      .mockResolvedValueOnce({ ok: true, ts: "ph-ts" })
+      .mockResolvedValueOnce({ ok: true, ts: "fallback-ts" });
     // First chat.update (from finalize) fails; poster must fall back to
     // chat.postMessage so the user still gets a reply.
     client.chat.update.mockRejectedValueOnce(new Error("rate_limited"));
@@ -943,6 +1236,11 @@ describe("progress poster", () => {
     expect(client.chat.postMessage).toHaveBeenLastCalledWith(
       expect.objectContaining({ text: "final" }),
     );
+    // Both ts's must be recorded so a later thread deletion cleans up both.
+    expect(replies.peek("C123", "1700000000.000100")).toEqual([
+      "ph-ts",
+      "fallback-ts",
+    ]);
   });
 });
 
@@ -961,6 +1259,7 @@ describe("createSlackAdapter (factory)", () => {
         ok: true,
         response: { text: "x", duration_ms: 1, tool_calls: 0 },
       }),
+      botReplyStore: makeBotReplyStore(),
       logger,
     });
     expect(typeof adapter.start).toBe("function");

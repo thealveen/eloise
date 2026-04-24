@@ -20,3 +20,16 @@ export interface SessionResolver {
   // make every retry error with "no conversation found".
   drop(slack_key: string): Promise<void>;
 }
+
+/**
+ * Tracks ts values of bot-authored replies per thread so we can clean them
+ * up when the user deletes the thread root. Kept separate from
+ * `SessionResolver` because the lifecycles differ: session rows can be
+ * dropped on first-turn failure or timeout, whereas reply rows are only
+ * dropped on explicit thread deletion.
+ */
+export interface BotReplyStore {
+  record(channel_id: string, thread_ts: string, reply_ts: string): void;
+  list(channel_id: string, thread_ts: string): string[];
+  drop(channel_id: string, thread_ts: string): void;
+}

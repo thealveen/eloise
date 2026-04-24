@@ -28,13 +28,19 @@
 import type {
   AgentProgressEvent,
   AgentRunner,
+  BotReplyStore,
   Logger,
   NormalizedEvent,
   SessionResolver,
 } from "../types/index.js";
 import type { Dedup } from "./dedup.js";
 import { formatErrorMessage } from "./format.js";
-import { isThreadReply, normalize, type RawSlackEvent } from "./normalize.js";
+import {
+  isThreadReply,
+  normalize,
+  normalizeDeletion,
+  type RawSlackEvent,
+} from "./normalize.js";
 import { addReaction, removeReaction, type ReactionsClient } from "./reactions.js";
 
 const THINKING = "thinking_face";
@@ -64,6 +70,10 @@ export type SlackClient = ReactionsClient & {
       ts: string;
       text: string;
     }): Promise<unknown>;
+    delete(args: {
+      channel: string;
+      ts: string;
+    }): Promise<{ ok?: boolean } | unknown>;
   };
 };
 
@@ -71,6 +81,9 @@ export type EventSource = "mention" | "message";
 
 export type EventHandler = {
   handle(raw: RawSlackEvent, client: SlackClient, source: EventSource): Promise<void>;
+  /** Cascade-delete the bot's own replies when the user deletes the thread
+   *  root. No-op if the deleted ts isn't a thread we replied in. */
+  handleDeletion(raw: RawSlackEvent, client: SlackClient): Promise<void>;
   /** Set the bot's own user ID once Bolt connects. Used by normalize to drop
    *  echoes of the bot's own messages (which lack `bot_id` on `app_mention`). */
   setBotUserId(id: string): void;
@@ -81,8 +94,27 @@ export function createEventHandler(deps: {
   agentRunner: AgentRunner;
   logger: Logger;
   dedup: Dedup;
+  botReplyStore: BotReplyStore;
 }): EventHandler {
   let botUserId: string | null = null;
+
+  function recordReply(
+    channel_id: string,
+    thread_ts: string,
+    reply_ts: string | undefined,
+  ): void {
+    if (!reply_ts) return;
+    try {
+      deps.botReplyStore.record(channel_id, thread_ts, reply_ts);
+    } catch (err) {
+      deps.logger.warn("bot reply record failed", {
+        channel_id,
+        thread_ts,
+        reply_ts,
+        error_message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 
   async function handle(
     raw: RawSlackEvent,
@@ -145,6 +177,7 @@ export function createEventHandler(deps: {
       event.channel_id,
       event.thread_ts,
       deps.logger,
+      (ts) => recordReply(event.channel_id, event.thread_ts, ts),
     );
 
     // Top-level try/catch wraps everything from here on so that ANY thrown
@@ -311,8 +344,57 @@ export function createEventHandler(deps: {
     }
   }
 
+  async function handleDeletion(
+    raw: RawSlackEvent,
+    client: SlackClient,
+  ): Promise<void> {
+    const d = normalizeDeletion(raw);
+    if (!d) return;
+
+    const replyTsList = deps.botReplyStore.list(d.channel_id, d.deleted_ts);
+    if (replyTsList.length === 0) return;
+
+    let deleted_count = 0;
+    let failed_count = 0;
+    for (const reply_ts of replyTsList) {
+      try {
+        await client.chat.delete({ channel: d.channel_id, ts: reply_ts });
+        deleted_count += 1;
+      } catch (err) {
+        failed_count += 1;
+        deps.logger.warn("chat.delete failed", {
+          channel_id: d.channel_id,
+          reply_ts,
+          error_message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    deps.botReplyStore.drop(d.channel_id, d.deleted_ts);
+
+    // The thread is dead; drop the SDK session row so any lingering
+    // follow-up doesn't try to resume against a ghost.
+    try {
+      await deps.sessionResolver.drop(`${d.channel_id}:${d.deleted_ts}`);
+    } catch (err) {
+      deps.logger.warn("session drop on deletion failed", {
+        channel_id: d.channel_id,
+        thread_ts: d.deleted_ts,
+        error_message: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    deps.logger.info("thread deleted cleanup", {
+      channel_id: d.channel_id,
+      thread_ts: d.deleted_ts,
+      deleted_count,
+      failed_count,
+    });
+  }
+
   return {
     handle,
+    handleDeletion,
     setBotUserId(id: string): void {
       botUserId = id;
     },
@@ -380,6 +462,10 @@ export function createProgressPoster(
   channel: string,
   thread_ts: string,
   logger: Logger,
+  /** Invoked with the ts of every message the poster posts via
+   *  `chat.postMessage` (placeholder + finalize fallback). Not invoked for
+   *  `chat.update` — that edits an already-recorded ts. */
+  onPosted: (ts: string) => void = () => {},
 ): {
   onProgress: (ev: AgentProgressEvent) => void;
   finalize: (text: string) => Promise<PosterResult>;
@@ -418,6 +504,7 @@ export function createProgressPoster(
       if (res && typeof res.ts === "string") {
         placeholderTs = res.ts;
         lastUpdateAt = Date.now();
+        onPosted(res.ts);
       }
     } catch (err) {
       logger.warn("placeholder post failed", {
@@ -499,7 +586,12 @@ export function createProgressPoster(
           // fall through to postMessage
         }
       }
-      await client.chat.postMessage({ channel, thread_ts, text });
+      const res = (await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text,
+      })) as { ts?: string } | undefined;
+      if (res && typeof res.ts === "string") onPosted(res.ts);
       return { posted: true, via: "postMessage" };
     },
 

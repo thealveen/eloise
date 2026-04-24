@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Logger, NormalizedEvent } from "../types/index.js";
 import { createSessionResolver } from "./index.js";
-import { openSessionDb } from "./sqlite.js";
+import { createBotReplyStore, openSessionDb } from "./sqlite.js";
 import { createResolverFromDb, slackKey } from "./resolver.js";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -133,5 +133,38 @@ describe("createSessionResolver", () => {
     const second = await resolver.resolve(event);
     expect(second.is_new).toBe(true);
     expect(second.session_id).not.toBe(first.session_id);
+  });
+});
+
+describe("createBotReplyStore", () => {
+  it("records, lists, and drops per (channel, thread)", () => {
+    const sdb = openSessionDb(":memory:");
+    const store = createBotReplyStore(sdb.db);
+
+    store.record("C1", "t1", "r1a");
+    store.record("C1", "t1", "r1b");
+    store.record("C1", "t2", "r2a");
+    store.record("C2", "t1", "r3a"); // same thread_ts, different channel
+
+    expect(store.list("C1", "t1")).toEqual(["r1a", "r1b"]);
+    expect(store.list("C1", "t2")).toEqual(["r2a"]);
+    expect(store.list("C2", "t1")).toEqual(["r3a"]);
+    expect(store.list("C1", "nope")).toEqual([]);
+
+    store.drop("C1", "t1");
+    expect(store.list("C1", "t1")).toEqual([]);
+    // Other rows are untouched.
+    expect(store.list("C1", "t2")).toEqual(["r2a"]);
+    expect(store.list("C2", "t1")).toEqual(["r3a"]);
+  });
+
+  it("record is idempotent on the composite primary key", () => {
+    const sdb = openSessionDb(":memory:");
+    const store = createBotReplyStore(sdb.db);
+
+    store.record("C1", "t1", "dup");
+    store.record("C1", "t1", "dup");
+
+    expect(store.list("C1", "t1")).toEqual(["dup"]);
   });
 });

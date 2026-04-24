@@ -28,7 +28,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 // Import AFTER vi.mock so transitive imports see the stubbed SDK.
 const { loadSystemPrompt } = await import("./prompt/index.js");
 const { loadMcpConfig } = await import("./mcp/index.js");
-const { createSessionResolver } = await import("./session/index.js");
+const { createSessionStores } = await import("./session/index.js");
 const { createAgentRunner } = await import("./agent/index.js");
 const { createEventHandler } = await import("./slack/handler.js");
 const { createDedup } = await import("./slack/dedup.js");
@@ -92,7 +92,7 @@ describe("E2E: real factories, mocked SDK + Slack client", () => {
     const mcpConfig = loadMcpConfig({
       SUPABASE_MCP_TOKEN: "sbp_dummy",
     } as NodeJS.ProcessEnv);
-    const sessionResolver = createSessionResolver({
+    const { sessionResolver, botReplyStore } = createSessionStores({
       dbPath: ":memory:",
       logger,
     });
@@ -109,6 +109,7 @@ describe("E2E: real factories, mocked SDK + Slack client", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore,
     });
     return { handler, sessionResolver };
   }

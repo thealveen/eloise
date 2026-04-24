@@ -26,6 +26,10 @@ Each component directory has exactly one public entry (`index.ts`). Other compon
 
 To run the bot on your laptop against real Slack, Anthropic, and Supabase — see `docs/LOCAL.md`. For VPS deployment under pm2, see `docs/DEPLOY.md`.
 
+## Behavior notes
+
+- Deleting the starting message of a thread cascades: the bot deletes every reply it posted in that thread and forgets the session. No Slack scope changes are needed for this.
+
 ## Development
 
 - `npm run dev` — watch mode via `tsx`

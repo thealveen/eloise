@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { createLogger } from "./observability/index.js";
 import { loadSystemPrompt } from "./prompt/index.js";
 import { loadMcpConfig } from "./mcp/index.js";
-import { createSessionResolver } from "./session/index.js";
+import { createSessionStores } from "./session/index.js";
 import { createAgentRunner } from "./agent/index.js";
 import { createSlackAdapter } from "./slack/index.js";
 import type { LogLevel, Logger } from "./types/index.js";
@@ -18,7 +18,7 @@ async function main() {
   // SDK resolves .claude/skills/ from cwd. Our cwd is an isolated scratch
   // dir, so we symlink to the repo's .claude/ at startup. Idempotent.
   ensureSkillsSymlink({ agentCwd, repoRoot: process.cwd(), logger });
-  const sessionResolver = createSessionResolver({
+  const { sessionResolver, botReplyStore } = createSessionStores({
     dbPath: "./data/sessions.db",
     logger,
   });
@@ -36,6 +36,7 @@ async function main() {
     appToken: requireEnv("SLACK_APP_TOKEN"),
     sessionResolver,
     agentRunner,
+    botReplyStore,
     logger,
   });
   await slackAdapter.start();

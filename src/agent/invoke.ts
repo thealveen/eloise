@@ -23,6 +23,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentRequest, Logger, McpConfig } from "../types/index.js";
 import { applyMessage, initAccumulator } from "./accumulate.js";
+import { unwrapSupabaseEnvelope } from "./hooks.js";
 
 export type InvokeDeps = {
   systemPrompt: string;
@@ -127,6 +128,16 @@ export async function invokeAgent(
       // live in the repo while cwd stays an isolated scratch dir.
       settingSources: ["project"],
       allowedTools: [...ALLOWED_TOOLS],
+      // Strip the 4-layer Supabase MCP envelope before the SDK decides
+      // whether to persist the result to disk. See src/agent/hooks.ts.
+      hooks: {
+        PostToolUse: [
+          {
+            matcher: "mcp__supabase__.*",
+            hooks: [unwrapSupabaseEnvelope],
+          },
+        ],
+      },
       maxTurns: MAX_TURNS,
       // Pin to the running node binary so nvm/volta/asdf users don't hit
       // `spawn node ENOENT` — the SDK otherwise spawns bare "node" which

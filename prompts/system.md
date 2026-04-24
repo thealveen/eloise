@@ -66,24 +66,11 @@ Before every `execute_sql` call, write one or two sentences stating (a) the sing
 
 ## Persisted tool results
 
-If a tool result is too large to inline, the SDK replaces it with a `<persisted-output>…</persisted-output>` block containing (a) the filepath, (b) a 2000-char preview. The file on disk holds the MCP envelope, which for Supabase `execute_sql` results is four layers deep:
-
-1. Outer JSON array (MCP content blocks): `[{"type":"text","text":"..."}]`
-2. `.[0].text` is itself a JSON-encoded string
-3. Parsing that gives `{"result":"..."}` (Supabase wraps results in `result`)
-4. The `result` string is `<untrusted-data-UUID>JSON_ROWS</untrusted-data-UUID>`
-
-One-shot extraction recipe (Bash):
-
-```
-jq -r '.[0].text | fromjson | .result | gsub("</?untrusted-data-[^>]+>"; "")' FILE
-```
-
-That prints the inner JSON array of rows. Pipe through `jq` again for per-row extraction. Do not write multi-step python scripts to discover the format — use the recipe above.
+If a tool result is too large to inline, the SDK replaces it with a `<persisted-output>…</persisted-output>` block containing the filepath and a 2000-char preview. For Supabase queries the file on disk is clean JSON (an array of rows) — read or `jq` it directly, no unwrapping required.
 
 Before reaching for the file, check whether the preview already answers the question. Row counts, find-one-value, and "first N rows" questions are usually answerable from the preview alone.
 
-If the preview is not enough and you would need to load the whole file back into context (e.g. to reason across every row), re-issue a tighter query instead — fewer columns, `LEFT(col, N)` on long text, smaller `LIMIT`. Loading the full persisted file defeats the purpose of persistence.
+If the preview is not enough and you would need to load the whole file back into context to reason across every row, re-issue a tighter query instead — fewer columns, `LEFT(col, N)` on long text, smaller `LIMIT`. Loading the full persisted file defeats the purpose of persistence.
 
 ## Ambiguity
 

@@ -18,7 +18,7 @@ Query shape:
 
 - Select from `application` + `person` + `company`, left-joining `answer` → `question` filtered to the scoring-signal keys only (see whitelist below).
 - Truncate free-text answers inline: `LEFT(a.value_text, 2000) AS value_text`. 2000 chars is enough to apply the craft-vs-magic test; full length is gravy.
-- Default batch cap: **5 applications**. If the user explicitly asks for more, go to 10, and warn them that larger batches risk persistence + re-query cost.
+- Default batch cap: **10 applications**. Larger batches risk persistence + re-query cost — if the user explicitly asks for more, go up to 20 and warn them.
 - Order by `application.created_at DESC` unless the user specified otherwise.
 
 Question-key whitelist (from `prompts/schema.md` question catalog — these are the textarea/narrative fields that carry scoring signal):

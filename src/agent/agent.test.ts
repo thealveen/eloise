@@ -75,6 +75,16 @@ async function* gen(items: unknown[]): AsyncIterable<unknown> {
   for (const it of items) yield it;
 }
 
+// Simulates the CLI streaming a terminal result message and then the
+// subprocess dying — the SDK throws from the iterator after the last yield.
+async function* genThenThrow(
+  items: unknown[],
+  err: Error,
+): AsyncIterable<unknown> {
+  for (const it of items) yield it;
+  throw err;
+}
+
 describe("createAgentRunner.run", () => {
   beforeEach(() => {
     mockQueryImpl = () => gen([]);
@@ -329,6 +339,65 @@ describe("createAgentRunner.run", () => {
     if (result.error.kind === "sdk_error") {
       expect(result.error.message).toContain("error_during_execution");
       expect(result.error.message).toContain("subprocess crashed");
+    }
+  });
+
+  it("maps subtype:success + is_error + auth-pattern text to kind:auth_error (wins over subprocess exit)", async () => {
+    // The CLI emits a structured result with an auth/usage message, then the
+    // subprocess exits 1 and the iterator throws. The structured message must
+    // win — otherwise the user sees a generic "unknown" error.
+    mockQueryImpl = () =>
+      genThenThrow(
+        [
+          { type: "system", subtype: "init", session_id: "sess-123" },
+          {
+            type: "result",
+            subtype: "success",
+            session_id: "sess-123",
+            num_turns: 0,
+            is_error: true,
+            result: "Invalid API key · Please run /login",
+            duration_api_ms: 0,
+          },
+        ],
+        new Error("Claude Code process exited with code 1"),
+      );
+    const { runner, logger } = makeRunner();
+    const result = await runner.run(makeRequest());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe("auth_error");
+    if (result.error.kind === "auth_error") {
+      expect(result.error.message).toContain("Invalid API key");
+    }
+    const failedLog = logger.events.find((e) => e.message === "agent failed");
+    expect(failedLog?.error_kind).toBe("auth_error");
+  });
+
+  it("maps subtype:success + is_error + generic text to kind:api_error", async () => {
+    mockQueryImpl = () =>
+      genThenThrow(
+        [
+          { type: "system", subtype: "init", session_id: "sess-123" },
+          {
+            type: "result",
+            subtype: "success",
+            session_id: "sess-123",
+            num_turns: 0,
+            is_error: true,
+            result: "something generic went wrong upstream",
+            duration_api_ms: 0,
+          },
+        ],
+        new Error("Claude Code process exited with code 1"),
+      );
+    const { runner } = makeRunner();
+    const result = await runner.run(makeRequest());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe("api_error");
+    if (result.error.kind === "api_error") {
+      expect(result.error.message).toContain("something generic");
     }
   });
 

@@ -29,6 +29,7 @@ export type AgentError =
   | { kind: "timeout" }
   | { kind: "rate_limit" }
   | { kind: "max_turns" }
+  | { kind: "auth_error"; message: string }
   | { kind: "sdk_error"; message: string }
   | { kind: "api_error"; message: string }
   | { kind: "mcp_error"; message: string }

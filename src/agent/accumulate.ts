@@ -87,6 +87,19 @@ export function applyMessage(acc: Accumulator, msg: unknown): void {
       // consists entirely of tool_use turns with no trailing text-only
       // message.
       if (typeof msg.result === "string") acc.text = msg.result;
+      // The CLI can emit subtype:"success" WITH is_error:true when the
+      // Anthropic API rejects the call (usage limit, bogus key). The
+      // `result` string carries the human-readable reason. Treat this as
+      // a terminal error under a synthetic subtype so invoke.ts surfaces
+      // it instead of the generic "exited with code 1".
+      if (msg.is_error === true) {
+        const errMsg = typeof msg.result === "string" ? msg.result : "";
+        acc.sdk_errors = errMsg ? [errMsg] : [];
+        acc.result_error = {
+          subtype: "success_with_error",
+          errors: errMsg ? [errMsg] : [],
+        };
+      }
     } else if (subtype) {
       const errors = Array.isArray(msg.errors)
         ? msg.errors.filter((e): e is string => typeof e === "string")

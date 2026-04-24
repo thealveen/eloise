@@ -178,6 +178,16 @@ export async function invokeAgent(
       abortErr.name = "AbortError";
       throw abortErr;
     }
+    // If the accumulator captured a structured result_error before the
+    // stream died, surface that instead of the generic subprocess exit.
+    // Happens when the CLI emits `{subtype:"success", is_error:true,
+    // result:"Invalid API key..."}` and then exits 1.
+    if (acc.result_error) {
+      throw new SdkResultError(
+        acc.result_error.subtype,
+        acc.result_error.errors,
+      );
+    }
     throw err;
   }
 

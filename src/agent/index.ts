@@ -115,6 +115,13 @@ export function createAgentRunner(deps: {
   };
 }
 
+// Text the CLI returns on auth/usage rejections. "Invalid API key · Please run
+// /login" shows up for both a bad key AND the Anthropic usage-limit cap — the
+// CLI reuses that string. Keep the pattern broad but specific enough not to
+// swallow generic API errors.
+const AUTH_ERROR_PATTERN =
+  /invalid api key|please run \/login|usage limit|rate[_ -]?limit|quota/i;
+
 function errorMessage(e: AgentError): string | undefined {
   if (e.kind === "timeout" || e.kind === "rate_limit" || e.kind === "max_turns") {
     return undefined;
@@ -134,6 +141,18 @@ function mapError(
 
   if (err instanceof SdkResultError) {
     if (err.subtype === "error_max_turns") return { kind: "max_turns" };
+    // Synthetic subtype from accumulate.ts for `subtype:"success",
+    // is_error:true` — the CLI's own words for an API/auth rejection.
+    if (err.subtype === "success_with_error") {
+      const first = err.errors[0] ?? "";
+      if (AUTH_ERROR_PATTERN.test(first)) {
+        return { kind: "auth_error", message: sanitize(first) };
+      }
+      return {
+        kind: "api_error",
+        message: sanitize(err.errors.join("; ")),
+      };
+    }
     const joined = err.errors.join("; ");
     return {
       kind: "sdk_error",

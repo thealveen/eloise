@@ -19,6 +19,8 @@ export function formatErrorMessage(error: AgentError): string {
       return "Rate limited, try again shortly.";
     case "max_turns":
       return "Ran out of steps on this batch — try a smaller one.";
+    case "auth_error":
+      return "Claude API rejected the request — usage limit or key issue. Ping Alvin.";
     case "sdk_error":
     case "api_error":
     case "mcp_error":

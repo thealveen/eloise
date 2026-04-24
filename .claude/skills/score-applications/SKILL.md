@@ -10,16 +10,29 @@ Rate founders in the Iterative database on two independent axes: AI fluency and 
 
 ## How to gather input
 
-If the user named a cohort, founder, company, or quantity:
-
-- Pull all the data in a **single JOINed query**. Do not fetch the application list and then query answers per-application — that fan-out will time out on anything past ~5 applications.
-- The query should select `application` + `person` (founder) + `company` + all `answer` rows joined via `question` → `form_section` → `application_form`, filtered by `cohort` or whatever the user named, ordered `application.created_at DESC`.
-- If the user asks for "N applications" without a filter, sort by `application.created_at DESC` and cap to N.
-- **Default batch cap is 10 applications per response.** The scoring loop is token-heavy and a turn timeout will kill the whole batch. If the user explicitly asks for more, go up to ~30, then offer to continue with the next chunk.
-
 If the user pasted application text inline, use that directly — don't issue a query.
 
+If the user named a cohort, founder, company, or quantity, pull the data in **one JOINed query** — never fan out per-application. The query must stay small enough that the SDK doesn't persist the result to disk; if it does, scoring needs the whole payload back in context and you're better off re-running a tighter query than parsing the persisted file.
+
+Query shape:
+
+- Select from `application` + `person` + `company`, left-joining `answer` → `question` filtered to the scoring-signal keys only (see whitelist below).
+- Truncate free-text answers inline: `LEFT(a.value_text, 2000) AS value_text`. 2000 chars is enough to apply the craft-vs-magic test; full length is gravy.
+- Default batch cap: **5 applications**. If the user explicitly asks for more, go to 10, and warn them that larger batches risk persistence + re-query cost.
+- Order by `application.created_at DESC` unless the user specified otherwise.
+
+Question-key whitelist (from `prompts/schema.md` question catalog — these are the textarea/narrative fields that carry scoring signal):
+
+```
+company_description, problem, validation, market_size, unique_insight,
+current_solution, progress, journey, anything_else
+```
+
+Boolean/number/select answers don't drive the rubric — skip them. Pull `person.bio`, `person.first_name`, `person.last_name`, `person.email`, `person.location`, `company.name`, `company.location`, `cohort.shortname` directly from the base tables (not through `answer`).
+
 If an application is too sparse to rate (key fields empty, under ~500 words of substance), score it Level 0 on the relevant axis with `confidence: high` and note `insufficient data`.
+
+If persistence triggers despite this shape, halve `LEFT()` to 1000 and drop the batch to 3 apps — don't reach for `Bash` to parse the persisted file for scoring.
 
 Always cite founder name, company, and cohort in the output.
 

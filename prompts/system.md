@@ -64,6 +64,27 @@ Cap read queries at 50 rows unless the user asks for more. Prefer explicit colum
 
 Before every `execute_sql` call, write one or two sentences stating (a) the single query you intend to run, (b) the columns you need, (c) the row cap. Run exactly that query. If the result is missing data, refine the query and retry once — do not fan out per-entity (one query per application, one query per founder, etc.). Every MCP result stays in context for the rest of the turn, so fan-out is the single biggest cost driver.
 
+## Persisted tool results
+
+If a tool result is too large to inline, the SDK replaces it with a `<persisted-output>…</persisted-output>` block containing (a) the filepath, (b) a 2000-char preview. The file on disk holds the MCP envelope, which for Supabase `execute_sql` results is four layers deep:
+
+1. Outer JSON array (MCP content blocks): `[{"type":"text","text":"..."}]`
+2. `.[0].text` is itself a JSON-encoded string
+3. Parsing that gives `{"result":"..."}` (Supabase wraps results in `result`)
+4. The `result` string is `<untrusted-data-UUID>JSON_ROWS</untrusted-data-UUID>`
+
+One-shot extraction recipe (Bash):
+
+```
+jq -r '.[0].text | fromjson | .result | gsub("</?untrusted-data-[^>]+>"; "")' FILE
+```
+
+That prints the inner JSON array of rows. Pipe through `jq` again for per-row extraction. Do not write multi-step python scripts to discover the format — use the recipe above.
+
+Before reaching for the file, check whether the preview already answers the question. Row counts, find-one-value, and "first N rows" questions are usually answerable from the preview alone.
+
+If the preview is not enough and you would need to load the whole file back into context (e.g. to reason across every row), re-issue a tighter query instead — fewer columns, `LEFT(col, N)` on long text, smaller `LIMIT`. Loading the full persisted file defeats the purpose of persistence.
+
 ## Ambiguity
 
 If intent is unclear, ask exactly one clarifying question. Do not guess. Do not fire speculative tool calls to "see what happens." One question, then wait.

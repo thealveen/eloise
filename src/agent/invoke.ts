@@ -60,22 +60,19 @@ export class SdkResultError extends Error {
   }
 }
 
-// Spec §5: MCP tools + filesystem primitives. The `mcp__<server>` prefix is
-// the SDK's convention for MCP tool namespacing. We pin to the supabase
-// server by name; the exact wildcard expansion (prefix match) is handled by
-// the SDK.
+// Read-only Slack DB assistant. Keep `Bash` for the `jq` recipe the model
+// uses to un-wrap persisted tool results (see prompts/system.md "Persisted
+// tool results"); keep `Read` as a fallback. `Write`/`Edit` have no purpose
+// here — removing them prevents the model from rabbit-holing into
+// file-edit tangents when a query result gets persisted to disk.
 const ALLOWED_TOOLS = [
   "mcp__supabase",
-  // The SDK's built-in tool the model emits to invoke a SKILL.md-defined
-  // skill (e.g. `score-applications`). Must be here even though
-  // `settingSources: ["project"]` below is what makes the skill's
-  // frontmatter appear in the system prompt — skill *discovery* and skill
-  // *invocation* are separate permissions. Missing this causes post-resume
-  // turns to fail with "the skill isn't available to invoke here".
+  // SDK built-in used to invoke SKILL.md-defined skills. Skill discovery
+  // (via settingSources: ["project"] below) and skill invocation are
+  // separate permissions — missing this causes "the skill isn't available
+  // to invoke here" on resume turns.
   "Skill",
   "Read",
-  "Write",
-  "Edit",
   "Bash",
 ] as const;
 

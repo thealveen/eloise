@@ -59,7 +59,20 @@ export const unwrapSupabaseEnvelope: HookCallback = async (input) => {
 
   const unwrapped = unwrapSupabaseText(input.tool_response);
   if (unwrapped === undefined) {
-    process.stderr.write(`[hook] no-op: envelope shape did not match\n`);
+    const shape = isRecord(input.tool_response)
+      ? JSON.stringify({
+          keys: Object.keys(input.tool_response),
+          content_type: Array.isArray(
+            (input.tool_response as Record<string, unknown>).content,
+          )
+            ? "array"
+            : typeof (input.tool_response as Record<string, unknown>).content,
+        })
+      : `non-record(${typeof input.tool_response})`;
+    const preview = JSON.stringify(input.tool_response).slice(0, 400);
+    process.stderr.write(
+      `[hook] no-op shape=${shape} preview=${preview}\n`,
+    );
     return {};
   }
 

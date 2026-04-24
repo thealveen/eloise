@@ -66,6 +66,13 @@ export class SdkResultError extends Error {
 // the SDK.
 const ALLOWED_TOOLS = [
   "mcp__supabase",
+  // The SDK's built-in tool the model emits to invoke a SKILL.md-defined
+  // skill (e.g. `score-applications`). Must be here even though
+  // `settingSources: ["project"]` below is what makes the skill's
+  // frontmatter appear in the system prompt — skill *discovery* and skill
+  // *invocation* are separate permissions. Missing this causes post-resume
+  // turns to fail with "the skill isn't available to invoke here".
+  "Skill",
   "Read",
   "Write",
   "Edit",
@@ -157,7 +164,16 @@ export async function invokeAgent(
       // care about; anything else falls through untouched.
       const before = acc.tool_calls;
       const lastTool = traceMessage(msg, deps.logger);
+      const hadTools = acc.tools !== undefined;
       applyMessage(acc, msg);
+      // First system/init message: log what the SDK subprocess registered.
+      // Makes "is Skill loaded on this turn?" a grep away in pm2 logs.
+      if (!hadTools && acc.tools !== undefined) {
+        deps.logger.info("agent subprocess ready", {
+          tools: acc.tools,
+          mcp_servers: acc.mcp_servers,
+        });
+      }
       if (request.onProgress && acc.tool_calls > before) {
         try {
           request.onProgress({

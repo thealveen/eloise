@@ -15,11 +15,15 @@ export type AgentResponse = {
   duration_ms: number;
   tool_calls: number;
   sdk_session_id?: string;
+  sdk_subtype?: string;
+  sdk_num_turns?: number;
 };
 
 export type AgentError =
   | { kind: "timeout" }
   | { kind: "rate_limit" }
+  | { kind: "max_turns" }
+  | { kind: "sdk_error"; message: string }
   | { kind: "api_error"; message: string }
   | { kind: "mcp_error"; message: string }
   | { kind: "unknown"; message: string };

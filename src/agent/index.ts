@@ -8,7 +8,7 @@ import type {
   McpConfig,
   SystemPrompt,
 } from "../types/index.js";
-import { invokeAgent } from "./invoke.js";
+import { invokeAgent, SdkResultError } from "./invoke.js";
 import { TimeoutError, withTimeout } from "./timeout.js";
 
 export function createAgentRunner(deps: {
@@ -65,6 +65,15 @@ export function createAgentRunner(deps: {
           sdk_session_id: out.sdk_session_id,
           mcp_servers: out.mcp_servers,
           mcp_tools_count: mcp_tools.length,
+          // SDK-reported run metadata. `text_length:0` + `sdk_subtype:"success"`
+          // means the model produced an empty synthesis; `sdk_subtype` other
+          // than "success" is a bug (should have thrown in invoke.ts).
+          sdk_subtype: out.sdk_subtype,
+          sdk_num_turns: out.sdk_num_turns,
+          sdk_is_error: out.sdk_is_error,
+          sdk_duration_api_ms: out.sdk_duration_api_ms,
+          sdk_cost_usd: out.sdk_cost_usd,
+          text_length: out.text.length,
         });
 
         return {
@@ -74,11 +83,19 @@ export function createAgentRunner(deps: {
             duration_ms,
             tool_calls: out.tool_calls,
             sdk_session_id: out.sdk_session_id,
+            sdk_subtype: out.sdk_subtype,
+            sdk_num_turns: out.sdk_num_turns,
           },
         };
       } catch (err) {
         const duration_ms = Date.now() - start;
         const error = mapError(err, sanitize);
+        // Cap errors[] surface at 3 entries × 200 chars so a runaway SDK
+        // error stream doesn't blow out log lines.
+        const sdk_errors =
+          err instanceof SdkResultError
+            ? err.errors.slice(0, 3).map((s) => sanitize(s).slice(0, 200))
+            : undefined;
         deps.logger.error("agent failed", {
           status: error.kind === "timeout" ? "timeout" : "error",
           duration_ms,
@@ -87,6 +104,9 @@ export function createAgentRunner(deps: {
           user_id: request.meta.user_id,
           error_kind: error.kind,
           error_message: errorMessage(error),
+          sdk_subtype:
+            err instanceof SdkResultError ? err.subtype : undefined,
+          sdk_errors,
         });
         return { ok: false, error };
       }
@@ -95,7 +115,9 @@ export function createAgentRunner(deps: {
 }
 
 function errorMessage(e: AgentError): string | undefined {
-  if (e.kind === "timeout" || e.kind === "rate_limit") return undefined;
+  if (e.kind === "timeout" || e.kind === "rate_limit" || e.kind === "max_turns") {
+    return undefined;
+  }
   return e.message;
 }
 
@@ -107,6 +129,15 @@ function mapError(
 
   if (isRecord(err) && typeof err.name === "string" && err.name === "AbortError") {
     return { kind: "timeout" };
+  }
+
+  if (err instanceof SdkResultError) {
+    if (err.subtype === "error_max_turns") return { kind: "max_turns" };
+    const joined = err.errors.join("; ");
+    return {
+      kind: "sdk_error",
+      message: sanitize(`${err.subtype}: ${joined}`),
+    };
   }
 
   const status =

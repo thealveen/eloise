@@ -17,6 +17,9 @@ export function formatErrorMessage(error: AgentError): string {
       return "Took too long, try again.";
     case "rate_limit":
       return "Rate limited, try again shortly.";
+    case "max_turns":
+      return "Ran out of steps on this batch — try a smaller one.";
+    case "sdk_error":
     case "api_error":
     case "mcp_error":
     case "unknown":

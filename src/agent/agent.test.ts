@@ -252,6 +252,107 @@ describe("createAgentRunner.run", () => {
     expect(result.error.kind).toBe("unknown");
   });
 
+  it("uses result.result as canonical text on subtype:success (overrides concat fallback)", async () => {
+    mockQueryImpl = () =>
+      gen([
+        { type: "system", subtype: "init", session_id: "sess-123" },
+        {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "stale" }] },
+        },
+        {
+          type: "result",
+          subtype: "success",
+          session_id: "sess-123",
+          num_turns: 3,
+          result: "canonical answer from SDK",
+          is_error: false,
+        },
+      ]);
+    const { runner } = makeRunner();
+    const result = await runner.run(makeRequest());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.response.text).toBe("canonical answer from SDK");
+    expect(result.response.sdk_subtype).toBe("success");
+    expect(result.response.sdk_num_turns).toBe(3);
+  });
+
+  it("maps error_max_turns subtype to kind:max_turns", async () => {
+    mockQueryImpl = () =>
+      gen([
+        { type: "system", subtype: "init", session_id: "sess-123" },
+        {
+          type: "assistant",
+          message: {
+            content: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }],
+          },
+        },
+        {
+          type: "result",
+          subtype: "error_max_turns",
+          session_id: "sess-123",
+          num_turns: 40,
+          is_error: true,
+          errors: ["max turns reached"],
+        },
+      ]);
+    const { runner, logger } = makeRunner();
+    const result = await runner.run(makeRequest());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe("max_turns");
+    // "agent failed" log should include the SDK subtype and num_turns so
+    // future incidents are one-line-diagnosable.
+    const failedLog = logger.events.find((e) => e.message === "agent failed");
+    expect(failedLog?.sdk_subtype).toBe("error_max_turns");
+  });
+
+  it("maps error_during_execution subtype to kind:sdk_error with joined message", async () => {
+    mockQueryImpl = () =>
+      gen([
+        { type: "system", subtype: "init", session_id: "sess-123" },
+        {
+          type: "result",
+          subtype: "error_during_execution",
+          session_id: "sess-123",
+          num_turns: 2,
+          is_error: true,
+          errors: ["subprocess crashed", "tool handshake failed"],
+        },
+      ]);
+    const { runner } = makeRunner();
+    const result = await runner.run(makeRequest());
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe("sdk_error");
+    if (result.error.kind === "sdk_error") {
+      expect(result.error.message).toContain("error_during_execution");
+      expect(result.error.message).toContain("subprocess crashed");
+    }
+  });
+
+  it("agent ok log includes text_length and sdk_subtype", async () => {
+    mockQueryImpl = () =>
+      gen([
+        { type: "system", subtype: "init", session_id: "sess-123" },
+        {
+          type: "result",
+          subtype: "success",
+          session_id: "sess-123",
+          num_turns: 5,
+          result: "hello",
+          is_error: false,
+        },
+      ]);
+    const { runner, logger } = makeRunner();
+    await runner.run(makeRequest());
+    const okLog = logger.events.find((e) => e.message === "agent ok");
+    expect(okLog?.text_length).toBe(5);
+    expect(okLog?.sdk_subtype).toBe("success");
+    expect(okLog?.sdk_num_turns).toBe(5);
+  });
+
   it("never logs the Anthropic API key or MCP bearer token", async () => {
     mockQueryImpl = () => {
       throw new Error(

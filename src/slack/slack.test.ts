@@ -351,6 +351,103 @@ describe("event handler", () => {
     );
   });
 
+  it("AgentError max_turns -> posts friendly 'ran out of steps' with ❌", async () => {
+    await assertErrorMapping(
+      { kind: "max_turns" },
+      "Ran out of steps on this batch — try a smaller one.",
+      "error",
+    );
+  });
+
+  it("AgentError sdk_error -> posts 'Something went wrong.' with ❌", async () => {
+    await assertErrorMapping(
+      { kind: "sdk_error", message: "error_during_execution: boom" },
+      "Something went wrong.",
+      "error",
+    );
+  });
+
+  it("empty text response: posts fallback, adds ❌, logs turn error with text_length:0", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeAgentRunner({
+      ok: true,
+      response: {
+        text: "",
+        duration_ms: 42,
+        tool_calls: 3,
+        sdk_subtype: "success",
+        sdk_num_turns: 5,
+      },
+    });
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+    });
+    const client = makeClient();
+
+    await handler.handle(channelMention(), client, "mention");
+
+    expect(client.reactions.add).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "x" }),
+    );
+    expect(client.chat.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Got no response — try again or rephrase.",
+      }),
+    );
+    // Never called with empty text — that's the whole point.
+    expect(client.chat.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: "" }),
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      "turn error",
+      expect.objectContaining({
+        status: "error",
+        error_message: "empty response",
+        text_length: 0,
+        sdk_subtype: "success",
+        sdk_num_turns: 5,
+      }),
+    );
+  });
+
+  it("turn ok log includes text_length and sdk_subtype from the agent response", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeAgentRunner({
+      ok: true,
+      response: {
+        text: "hello world",
+        duration_ms: 42,
+        tool_calls: 1,
+        sdk_subtype: "success",
+        sdk_num_turns: 3,
+      },
+    });
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+    });
+    const client = makeClient();
+
+    await handler.handle(channelMention(), client, "mention");
+
+    expect(logger.info).toHaveBeenCalledWith(
+      "turn ok",
+      expect.objectContaining({
+        status: "ok",
+        text_length: 11,
+        sdk_subtype: "success",
+        sdk_num_turns: 3,
+      }),
+    );
+  });
+
   it("ignores duplicate message_ts within TTL (no resolver/runner calls)", async () => {
     const logger = makeLogger();
     const sessionResolver = makeSessionResolver();

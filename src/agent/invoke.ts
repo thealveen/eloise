@@ -37,7 +37,27 @@ export type InvokeResult = {
   sdk_session_id?: string;
   mcp_servers?: { name: string; status: string }[];
   tools?: string[];
+  sdk_subtype?: string;
+  sdk_num_turns?: number;
+  sdk_is_error?: boolean;
+  sdk_duration_api_ms?: number;
+  sdk_cost_usd?: number;
 };
+
+// Thrown by invokeAgent when the SDK's final result message has a non-success
+// subtype (error_max_turns, error_during_execution, ...). Carries the subtype
+// so mapError can translate it into the right AgentError kind.
+export class SdkResultError extends Error {
+  readonly subtype: string;
+  readonly errors: string[];
+  constructor(subtype: string, errors: string[]) {
+    const detail = errors.length > 0 ? `: ${errors.join("; ")}` : "";
+    super(`sdk result ${subtype}${detail}`);
+    this.name = "SdkResultError";
+    this.subtype = subtype;
+    this.errors = errors;
+  }
+}
 
 // Spec §5: MCP tools + filesystem primitives. The `mcp__<server>` prefix is
 // the SDK's convention for MCP tool namespacing. We pin to the supabase
@@ -51,7 +71,10 @@ const ALLOWED_TOOLS = [
   "Bash",
 ] as const;
 
-const MAX_TURNS = 20;
+// Scoring 10 applications with MCP schema introspection + per-app validation
+// can legitimately need 25+ turns. 20 was too tight and caused silent
+// `error_max_turns` aborts. 40 gives breathing room without being unbounded.
+const MAX_TURNS = 40;
 
 type SdkMcpServers = Record<
   string,
@@ -139,11 +162,20 @@ export async function invokeAgent(
     throw err;
   }
 
+  if (acc.result_error) {
+    throw new SdkResultError(acc.result_error.subtype, acc.result_error.errors);
+  }
+
   return {
     text: acc.text,
     tool_calls: acc.tool_calls,
     sdk_session_id: acc.sdk_session_id,
     mcp_servers: acc.mcp_servers,
     tools: acc.tools,
+    sdk_subtype: acc.sdk_subtype,
+    sdk_num_turns: acc.sdk_num_turns,
+    sdk_is_error: acc.sdk_is_error,
+    sdk_duration_api_ms: acc.sdk_duration_api_ms,
+    sdk_cost_usd: acc.sdk_cost_usd,
   };
 }

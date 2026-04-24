@@ -173,6 +173,35 @@ export function createEventHandler(deps: {
             result.response.sdk_session_id,
           );
         }
+        const replyText = result.response.text;
+        // Guard against empty/whitespace-only responses. Slack's
+        // chat.postMessage rejects empty text with error code `no_text`; if
+        // we ever reach this branch with empty text the upstream agent has
+        // already logged something wrong. Convert to a user-facing error
+        // rather than letting Slack throw.
+        if (replyText.trim() === "") {
+          await addReaction(
+            client,
+            event.channel_id,
+            event.message_ts,
+            ERROR_MARK,
+            deps.logger,
+          );
+          await client.chat.postMessage({
+            channel: event.channel_id,
+            thread_ts: event.thread_ts,
+            text: "Got no response — try again or rephrase.",
+          });
+          logTurn(deps.logger, "error", event, session, {
+            duration_ms: result.response.duration_ms,
+            tool_calls: result.response.tool_calls,
+            text_length: 0,
+            sdk_subtype: result.response.sdk_subtype,
+            sdk_num_turns: result.response.sdk_num_turns,
+            error_message: "empty response",
+          });
+          return;
+        }
         // Always post in-thread per the hard constraint. `event.thread_ts`
         // is guaranteed populated by normalize (top-level falls back to ts).
         // Text is passed through verbatim — system prompt is responsible for
@@ -180,11 +209,14 @@ export function createEventHandler(deps: {
         await client.chat.postMessage({
           channel: event.channel_id,
           thread_ts: event.thread_ts,
-          text: result.response.text,
+          text: replyText,
         });
         logTurn(deps.logger, "ok", event, session, {
           duration_ms: result.response.duration_ms,
           tool_calls: result.response.tool_calls,
+          text_length: replyText.length,
+          sdk_subtype: result.response.sdk_subtype,
+          sdk_num_turns: result.response.sdk_num_turns,
         });
       } else {
         // First-turn failure on a brand-new session: drop the row so the
@@ -278,6 +310,9 @@ function logTurn(
     duration_ms?: number;
     tool_calls?: number;
     error_message?: string;
+    text_length?: number;
+    sdk_subtype?: string;
+    sdk_num_turns?: number;
   },
 ): void {
   const fields = {
@@ -287,6 +322,9 @@ function logTurn(
     text_preview: event.text.slice(0, 80),
     duration_ms: extras.duration_ms,
     tool_calls: extras.tool_calls,
+    text_length: extras.text_length,
+    sdk_subtype: extras.sdk_subtype,
+    sdk_num_turns: extras.sdk_num_turns,
     status,
     error_message: extras.error_message,
   };

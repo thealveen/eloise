@@ -115,7 +115,8 @@ What it does (in order), with each step printing a `===> step N: ...` banner:
 4. creates an unprivileged `botuser` (no sudo, password login locked)
 5. clones (or updates) the repo to `/home/botuser/slack-bot`
 6. creates `/home/botuser/agent-workdir` and `/home/botuser/slack-bot/data/`
-7. runs `npm ci`, `npm run build`, `npm run init-db` as `botuser`
+7. symlinks `agent-workdir/.claude` → `slack-bot/.claude` so the Agent SDK can find `.claude/skills/` from its cwd
+8. runs `npm ci`, `npm run build`, `npm run init-db` as `botuser`
 
 Typical runtime: 2–4 minutes on a fresh box; faster on a re-run. The script is idempotent — re-run it any time.
 

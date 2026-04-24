@@ -94,6 +94,10 @@ export async function invokeAgent(
       systemPrompt: deps.systemPrompt,
       mcpServers: toSdkMcpServers(deps.mcpConfig),
       cwd: deps.cwd,
+      // Load project-scoped skills from <cwd>/.claude/skills/. The startup
+      // composition root symlinks <cwd>/.claude -> <repo>/.claude so skills
+      // live in the repo while cwd stays an isolated scratch dir.
+      settingSources: ["project"],
       allowedTools: [...ALLOWED_TOOLS],
       maxTurns: MAX_TURNS,
       // Pin to the running node binary so nvm/volta/asdf users don't hit

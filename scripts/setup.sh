@@ -84,7 +84,13 @@ fi
 step 6 "create runtime directories"
 install -d -o "${BOT_USER}" -g "${BOT_USER}" -m 750 "${WORK_DIR}" "${REPO_DIR}/data"
 
-step 7 "install deps, build, init db (as ${BOT_USER})"
+step 7 "symlink .claude into agent workdir (SDK skills discovery)"
+# The Agent SDK reads .claude/skills/ relative to its cwd, which we set to
+# WORK_DIR for filesystem isolation. Symlink keeps skills in the repo while
+# still letting the SDK find them. `ln -sfn` is idempotent.
+sudo -u "${BOT_USER}" -H ln -sfn "${REPO_DIR}/.claude" "${WORK_DIR}/.claude"
+
+step 8 "install deps, build, init db (as ${BOT_USER})"
 sudo -u "${BOT_USER}" -H bash -lc "cd '${REPO_DIR}' && npm ci && npm run build && npm run init-db"
 
 cat <<EOF

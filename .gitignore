@@ -3,7 +3,8 @@ dist/
 data/
 !data/.gitkeep
 .env
-.claude/
+.claude/*
+!.claude/skills/
 *.log
 .DS_Store
 .yarn.lock

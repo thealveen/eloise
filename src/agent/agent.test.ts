@@ -80,17 +80,21 @@ describe("createAgentRunner.run", () => {
     mockQueryImpl = () => gen([]);
   });
 
-  it("accumulates assistant text and counts tool_use blocks", async () => {
+  it("keeps only text emitted after the last tool_use and counts tool calls", async () => {
+    // Between-tool narration ("let me check X") should not leak into the
+    // Slack reply. The accumulator drops text from messages that contain a
+    // tool_use AND resets anything previously accumulated, so only the
+    // final synthesis (text-only messages after the last tool call) wins.
     mockQueryImpl = () =>
       gen([
         { type: "system", subtype: "init", session_id: "sess-123" },
         {
           type: "assistant",
-          message: { content: [{ type: "text", text: "Hello " }] },
+          message: { content: [{ type: "text", text: "narration chunk 1 " }] },
         },
         {
           type: "assistant",
-          message: { content: [{ type: "text", text: "world" }] },
+          message: { content: [{ type: "text", text: "narration chunk 2" }] },
         },
         {
           type: "assistant",
@@ -100,7 +104,11 @@ describe("createAgentRunner.run", () => {
         },
         {
           type: "assistant",
-          message: { content: [{ type: "text", text: "!" }] },
+          message: { content: [{ type: "text", text: "final " }] },
+        },
+        {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "answer" }] },
         },
         { type: "result", session_id: "sess-123" },
       ]);
@@ -108,9 +116,36 @@ describe("createAgentRunner.run", () => {
     const result = await runner.run(makeRequest());
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.response.text).toBe("Hello world!");
+    expect(result.response.text).toBe("final answer");
     expect(result.response.tool_calls).toBe(1);
     expect(result.response.duration_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it("drops narration text from assistant messages that also contain tool_use", async () => {
+    mockQueryImpl = () =>
+      gen([
+        { type: "system", subtype: "init", session_id: "sess-123" },
+        {
+          type: "assistant",
+          message: {
+            content: [
+              { type: "text", text: "I'll check the users table first." },
+              { type: "tool_use", id: "t1", name: "Bash", input: {} },
+            ],
+          },
+        },
+        {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "42 users." }] },
+        },
+        { type: "result", session_id: "sess-123" },
+      ]);
+    const { runner } = makeRunner();
+    const result = await runner.run(makeRequest());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.response.text).toBe("42 users.");
+    expect(result.response.tool_calls).toBe(1);
   });
 
   it("omits `resume` for brand-new sessions so the SDK mints its own id", async () => {

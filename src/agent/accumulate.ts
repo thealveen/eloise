@@ -64,12 +64,27 @@ export function applyMessage(acc: Accumulator, msg: unknown): void {
     if (!isRecord(inner)) return;
     const content = inner.content;
     if (!Array.isArray(content)) return;
+    // Messages that include a tool_use block are think-act steps, not the
+    // final synthesis. Any text in them is narration ("Let me check X"),
+    // which we don't want in the Slack reply. Drop the narration AND reset
+    // any previously-accumulated narration from earlier steps so only text
+    // emitted after the last tool call survives.
+    const hasToolUse = content.some(
+      (b) => isRecord(b) && b.type === "tool_use",
+    );
+    if (hasToolUse) {
+      acc.text = "";
+      for (const block of content) {
+        if (isRecord(block) && block.type === "tool_use") {
+          acc.tool_calls += 1;
+        }
+      }
+      return;
+    }
     for (const block of content) {
       if (!isRecord(block)) continue;
       if (block.type === "text" && typeof block.text === "string") {
         acc.text += block.text;
-      } else if (block.type === "tool_use") {
-        acc.tool_calls += 1;
       }
     }
   }

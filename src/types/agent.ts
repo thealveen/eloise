@@ -1,6 +1,11 @@
 // Implements spec §10.3 Frozen Contracts.
 import type { SessionHandle } from "./session.js";
 
+export type AgentProgressEvent = {
+  tool_calls: number;
+  last_tool?: string;
+};
+
 export type AgentRequest = {
   session: SessionHandle;
   user_text: string;
@@ -8,6 +13,7 @@ export type AgentRequest = {
     user_id: string;
     slack_key: string;
   };
+  onProgress?: (event: AgentProgressEvent) => void;
 };
 
 export type AgentResponse = {

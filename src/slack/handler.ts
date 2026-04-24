@@ -26,6 +26,7 @@
  */
 
 import type {
+  AgentProgressEvent,
   AgentRunner,
   Logger,
   NormalizedEvent,
@@ -39,13 +40,28 @@ import { addReaction, removeReaction, type ReactionsClient } from "./reactions.j
 const THINKING = "thinking_face";
 const ERROR_MARK = "x";
 
+// Heartbeat tunables. Kept conservative to avoid Slack's `chat.update`
+// rate limit (~50/min per channel). The placeholder only appears if a turn
+// is still running after PLACEHOLDER_DELAY_MS; fast turns never see one.
+const PLACEHOLDER_DELAY_MS = 8_000;
+const UPDATE_DEBOUNCE_MS = 3_000;
+
 /**
  * Minimal `client` surface the handler needs from Bolt's WebClient. Keeping
  * it narrow makes the handler trivial to mock in tests.
  */
 export type SlackClient = ReactionsClient & {
   chat: {
-    postMessage(args: { channel: string; thread_ts: string; text: string }): Promise<unknown>;
+    postMessage(args: {
+      channel: string;
+      thread_ts: string;
+      text: string;
+    }): Promise<{ ts?: string } | unknown>;
+    update(args: {
+      channel: string;
+      ts: string;
+      text: string;
+    }): Promise<unknown>;
   };
 };
 
@@ -117,6 +133,18 @@ export function createEventHandler(deps: {
     // Step 4: receipt UX. Add 🤔 immediately so the user sees we got it.
     await addReaction(client, event.channel_id, event.message_ts, THINKING, deps.logger);
 
+    // Heartbeat poster: if the agent runs longer than PLACEHOLDER_DELAY_MS
+    // and emits tool calls, it posts a "Thinking… _N tool calls · latest:
+    // foo_" message into the thread and edits it as work continues. The
+    // finalize() call at the end of each terminal branch reuses that
+    // placeholder (via chat.update) so the thread ends up with one reply.
+    const poster = createProgressPoster(
+      client,
+      event.channel_id,
+      event.thread_ts,
+      deps.logger,
+    );
+
     // Top-level try/catch wraps everything from here on so that ANY thrown
     // error (resolver crash, Slack API failure, programming bug) still ends
     // the turn with a user-facing message and a structured log line. Per
@@ -129,7 +157,10 @@ export function createEventHandler(deps: {
       // Step 3 (continued): the K4 gate after resolution.
       if (isChannelNonMention && session.is_new) {
         // A new thread reply with no prior session — ignore. Clear the 🤔
-        // since we're not going to reply.
+        // since we're not going to reply. Also cancel the poster — in
+        // practice the agent never runs so no heartbeat fires, but belt
+        // and braces.
+        await poster.cancel();
         await removeReaction(
           client,
           event.channel_id,
@@ -151,6 +182,7 @@ export function createEventHandler(deps: {
         session,
         user_text: event.text,
         meta: { user_id: event.user_id, slack_key: session.slack_key },
+        onProgress: poster.onProgress,
       });
 
       // Step 7a: clear 🤔 before posting (so the user doesn't see both
@@ -187,11 +219,7 @@ export function createEventHandler(deps: {
             ERROR_MARK,
             deps.logger,
           );
-          await client.chat.postMessage({
-            channel: event.channel_id,
-            thread_ts: event.thread_ts,
-            text: "Got no response — try again or rephrase.",
-          });
+          await poster.finalize("Got no response — try again or rephrase.");
           logTurn(deps.logger, "error", event, session, {
             duration_ms: result.response.duration_ms,
             tool_calls: result.response.tool_calls,
@@ -206,11 +234,11 @@ export function createEventHandler(deps: {
         // is guaranteed populated by normalize (top-level falls back to ts).
         // Text is passed through verbatim — system prompt is responsible for
         // producing valid Slack mrkdwn. Do NOT transform.
-        await client.chat.postMessage({
-          channel: event.channel_id,
-          thread_ts: event.thread_ts,
-          text: replyText,
-        });
+        //
+        // If the heartbeat posted a "Thinking…" placeholder earlier, the
+        // poster edits it in place so the thread ends up with exactly one
+        // message per turn. Otherwise it falls back to chat.postMessage.
+        await poster.finalize(replyText);
         logTurn(deps.logger, "ok", event, session, {
           duration_ms: result.response.duration_ms,
           tool_calls: result.response.tool_calls,
@@ -234,11 +262,7 @@ export function createEventHandler(deps: {
           ERROR_MARK,
           deps.logger,
         );
-        await client.chat.postMessage({
-          channel: event.channel_id,
-          thread_ts: event.thread_ts,
-          text: formatErrorMessage(result.error),
-        });
+        await poster.finalize(formatErrorMessage(result.error));
         const status = result.error.kind === "timeout" ? "timeout" : "error";
         logTurn(deps.logger, status, event, session, {
           duration_ms: Date.now() - turnStart,
@@ -273,11 +297,7 @@ export function createEventHandler(deps: {
           ERROR_MARK,
           deps.logger,
         );
-        await client.chat.postMessage({
-          channel: event.channel_id,
-          thread_ts: event.thread_ts,
-          text: "Something went wrong.",
-        });
+        await poster.finalize("Something went wrong.");
       } catch {
         // If even the apology post fails, give up on UX — but the log line
         // below still fires so we know something went wrong.
@@ -340,4 +360,161 @@ function serializeAgentError(error: {
   message?: string;
 }): string {
   return error.message ? `${error.kind}: ${error.message}` : error.kind;
+}
+
+/**
+ * Per-turn Slack heartbeat. See plan §2b: after PLACEHOLDER_DELAY_MS of
+ * agent activity, post a "Thinking…" placeholder into the thread and edit
+ * it as tool calls accumulate. Finalize by editing the placeholder with the
+ * real reply, so the thread ends up with exactly one message per turn.
+ *
+ * Never throws. If `chat.update` fails (rate limited, deleted, etc.),
+ * falls back to posting a fresh message so the user always gets a reply.
+ */
+type PosterResult = { posted: boolean; via: "update" | "postMessage" };
+
+export function createProgressPoster(
+  client: SlackClient,
+  channel: string,
+  thread_ts: string,
+  logger: Logger,
+): {
+  onProgress: (ev: AgentProgressEvent) => void;
+  finalize: (text: string) => Promise<PosterResult>;
+  cancel: (fallbackText?: string) => Promise<void>;
+} {
+  let placeholderTs: string | undefined;
+  let latestState: AgentProgressEvent | undefined;
+  let lastUpdateAt = 0;
+  let initialTimer: ReturnType<typeof setTimeout> | undefined;
+  let pendingUpdateTimer: ReturnType<typeof setTimeout> | undefined;
+  // Serialize network calls so concurrent updates can't reorder.
+  let chain: Promise<void> = Promise.resolve();
+
+  function render(state: AgentProgressEvent): string {
+    const n = state.tool_calls;
+    const plural = n === 1 ? "" : "s";
+    const tail = state.last_tool
+      ? ` · latest: ${state.last_tool}`
+      : "";
+    return `Thinking… _${n} tool call${plural}${tail}_`;
+  }
+
+  function queue(fn: () => Promise<unknown>): Promise<void> {
+    chain = chain.then(() => fn().then(() => undefined, () => undefined));
+    return chain;
+  }
+
+  async function postPlaceholder(): Promise<void> {
+    if (placeholderTs || !latestState) return;
+    try {
+      const res = (await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: render(latestState),
+      })) as { ts?: string } | undefined;
+      if (res && typeof res.ts === "string") {
+        placeholderTs = res.ts;
+        lastUpdateAt = Date.now();
+      }
+    } catch (err) {
+      logger.warn("placeholder post failed", {
+        error_message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  async function updatePlaceholder(): Promise<void> {
+    if (!placeholderTs || !latestState) return;
+    try {
+      await client.chat.update({
+        channel,
+        ts: placeholderTs,
+        text: render(latestState),
+      });
+      lastUpdateAt = Date.now();
+    } catch (err) {
+      logger.warn("placeholder update failed", {
+        error_message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  function clearTimers(): void {
+    if (initialTimer) {
+      clearTimeout(initialTimer);
+      initialTimer = undefined;
+    }
+    if (pendingUpdateTimer) {
+      clearTimeout(pendingUpdateTimer);
+      pendingUpdateTimer = undefined;
+    }
+  }
+
+  return {
+    onProgress(ev: AgentProgressEvent): void {
+      latestState = ev;
+
+      if (!placeholderTs) {
+        if (!initialTimer) {
+          initialTimer = setTimeout(() => {
+            initialTimer = undefined;
+            void queue(postPlaceholder);
+          }, PLACEHOLDER_DELAY_MS);
+        }
+        return;
+      }
+
+      // Placeholder already up: debounce edits to UPDATE_DEBOUNCE_MS apart.
+      const since = Date.now() - lastUpdateAt;
+      if (since >= UPDATE_DEBOUNCE_MS) {
+        if (pendingUpdateTimer) {
+          clearTimeout(pendingUpdateTimer);
+          pendingUpdateTimer = undefined;
+        }
+        void queue(updatePlaceholder);
+      } else if (!pendingUpdateTimer) {
+        pendingUpdateTimer = setTimeout(() => {
+          pendingUpdateTimer = undefined;
+          void queue(updatePlaceholder);
+        }, UPDATE_DEBOUNCE_MS - since);
+      }
+    },
+
+    async finalize(text: string): Promise<PosterResult> {
+      clearTimers();
+      // Wait for any in-flight posts to settle so we don't race the edit.
+      await chain;
+
+      if (placeholderTs) {
+        try {
+          await client.chat.update({ channel, ts: placeholderTs, text });
+          return { posted: true, via: "update" };
+        } catch (err) {
+          logger.warn("finalize update failed, posting fresh", {
+            error_message: err instanceof Error ? err.message : String(err),
+          });
+          // fall through to postMessage
+        }
+      }
+      await client.chat.postMessage({ channel, thread_ts, text });
+      return { posted: true, via: "postMessage" };
+    },
+
+    async cancel(fallbackText?: string): Promise<void> {
+      clearTimers();
+      await chain;
+      if (placeholderTs && fallbackText !== undefined) {
+        try {
+          await client.chat.update({
+            channel,
+            ts: placeholderTs,
+            text: fallbackText,
+          });
+        } catch {
+          // best effort
+        }
+      }
+    },
+  };
 }

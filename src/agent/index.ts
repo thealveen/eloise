@@ -43,6 +43,7 @@ export function createAgentRunner(deps: {
               mcpConfig: deps.mcpConfig,
               cwd: deps.cwd,
               model: deps.model,
+              logger: deps.logger,
             },
             request,
             signal,

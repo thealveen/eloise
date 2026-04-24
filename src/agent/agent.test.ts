@@ -397,4 +397,60 @@ describe("createAgentRunner.run", () => {
     const { runner } = makeRunner();
     expect(typeof runner.run).toBe("function");
   });
+
+  it("invokes onProgress once per tool_use batch with monotonically increasing tool_calls", async () => {
+    // Stream with three tool-use batches interleaved with narration/text.
+    // Expect three onProgress calls, one per batch, with last_tool reflecting
+    // the batch's last tool name and tool_calls counting all tool_use blocks
+    // seen so far across the entire run.
+    mockQueryImpl = () =>
+      gen([
+        { type: "system", subtype: "init", session_id: "sess-1" },
+        {
+          type: "assistant",
+          message: {
+            content: [
+              { type: "tool_use", id: "t1", name: "Bash", input: {} },
+            ],
+          },
+        },
+        {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "narration" }] },
+        },
+        {
+          type: "assistant",
+          message: {
+            content: [
+              { type: "tool_use", id: "t2", name: "mcp__supabase__query", input: {} },
+              { type: "tool_use", id: "t3", name: "Read", input: {} },
+            ],
+          },
+        },
+        {
+          type: "assistant",
+          message: {
+            content: [
+              { type: "tool_use", id: "t4", name: "Edit", input: {} },
+            ],
+          },
+        },
+        {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "done" }] },
+        },
+        { type: "result", subtype: "success", result: "done", session_id: "sess-1", num_turns: 4 },
+      ]);
+    const { runner } = makeRunner();
+    const progress: Array<{ tool_calls: number; last_tool?: string }> = [];
+    const result = await runner.run(
+      makeRequest({ onProgress: (e) => progress.push(e) }),
+    );
+    expect(result.ok).toBe(true);
+    expect(progress).toEqual([
+      { tool_calls: 1, last_tool: "Bash" },
+      { tool_calls: 3, last_tool: "Read" },
+      { tool_calls: 4, last_tool: "Edit" },
+    ]);
+  });
 });

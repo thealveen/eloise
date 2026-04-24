@@ -54,15 +54,26 @@ function makeAgentRunner(result: AgentResult): AgentRunner {
   return { run: vi.fn().mockResolvedValue(result) };
 }
 
-function makeClient(): SlackClient & {
-  chat: { postMessage: ReturnType<typeof vi.fn> };
+function makeClient(opts: { placeholderTs?: string } = {}): SlackClient & {
+  chat: {
+    postMessage: ReturnType<typeof vi.fn>;
+    update: ReturnType<typeof vi.fn>;
+  };
   reactions: {
     add: ReturnType<typeof vi.fn>;
     remove: ReturnType<typeof vi.fn>;
   };
 } {
   return {
-    chat: { postMessage: vi.fn().mockResolvedValue({ ok: true }) },
+    chat: {
+      // Return a ts so the poster can capture it as the placeholder id when
+      // the heartbeat path fires. Defaults to "posted-ts"; tests that care
+      // can override.
+      postMessage: vi
+        .fn()
+        .mockResolvedValue({ ok: true, ts: opts.placeholderTs ?? "posted-ts" }),
+      update: vi.fn().mockResolvedValue({ ok: true }),
+    },
     reactions: {
       add: vi.fn().mockResolvedValue({ ok: true }),
       remove: vi.fn().mockResolvedValue({ ok: true }),
@@ -277,12 +288,16 @@ describe("event handler", () => {
     // Resolver received the normalized event.
     expect(sessionResolver.resolve).toHaveBeenCalledTimes(1);
 
-    // Runner received the right session + text.
-    expect(agentRunner.run).toHaveBeenCalledWith({
-      session: expect.objectContaining({ session_id: "sess-1" }),
-      user_text: "hello there",
-      meta: { user_id: "U999", slack_key: "C123:1700000000.000100" },
-    });
+    // Runner received the right session + text. Use objectContaining at
+    // the top level because the handler also wires in an `onProgress`
+    // callback from the heartbeat poster.
+    expect(agentRunner.run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        session: expect.objectContaining({ session_id: "sess-1" }),
+        user_text: "hello there",
+        meta: { user_id: "U999", slack_key: "C123:1700000000.000100" },
+      }),
+    );
 
     // postMessage in-thread, text passed through unmodified.
     expect(client.chat.postMessage).toHaveBeenCalledWith({
@@ -762,6 +777,173 @@ async function assertErrorMapping(
     expect.objectContaining({ status: expectedStatus }),
   );
 }
+
+// ---------- progress poster (heartbeat) ----------
+
+describe("progress poster", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Build an AgentRunner that fires onProgress N times at offsets (ms) from
+  // when run() is awaited, then resolves to the given AgentResult. Used to
+  // simulate a slow agent run in unit tests with fake timers.
+  function makeRunnerWithProgress(opts: {
+    progressAt: number[];
+    result: AgentResult;
+  }): AgentRunner {
+    return {
+      run: vi.fn().mockImplementation(async (req) => {
+        for (let i = 0; i < opts.progressAt.length; i++) {
+          await vi.advanceTimersByTimeAsync(
+            i === 0 ? opts.progressAt[0] : opts.progressAt[i] - opts.progressAt[i - 1],
+          );
+          req.onProgress?.({
+            tool_calls: i + 1,
+            last_tool: `tool_${i + 1}`,
+          });
+        }
+        return opts.result;
+      }),
+    };
+  }
+
+  it("long turn: posts placeholder after 8s, edits it on finalize, no extra postMessage", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeRunnerWithProgress({
+      progressAt: [1_000, 9_500, 13_000], // progress at 1s, 9.5s, 13s
+      result: {
+        ok: true,
+        response: { text: "final answer", duration_ms: 15_000, tool_calls: 3 },
+      },
+    });
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+    });
+    const client = makeClient({ placeholderTs: "ph-ts" });
+
+    await handler.handle(channelMention(), client, "mention");
+
+    // Exactly one postMessage — the placeholder that the poster posted at
+    // the 8s mark (fired by the 9.5s progress event, since the 1s event
+    // didn't arm the timer until after it set latestState — but the
+    // PLACEHOLDER_DELAY_MS timer was scheduled at 1s and fired at 9s,
+    // before the 9.5s event).
+    expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+    expect(client.chat.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "C123",
+        thread_ts: "1700000000.000100",
+        text: expect.stringContaining("Thinking…"),
+      }),
+    );
+
+    // Final text was posted via chat.update on the placeholder — not a new
+    // postMessage. This is the key assertion: the thread ends up with one
+    // message per turn.
+    expect(client.chat.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "C123",
+        ts: "ph-ts",
+        text: "final answer",
+      }),
+    );
+  });
+
+  it("fast turn (no progress events): no placeholder, final reply via postMessage", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeAgentRunner({
+      ok: true,
+      response: { text: "quick answer", duration_ms: 200, tool_calls: 0 },
+    });
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+    });
+    const client = makeClient();
+
+    await handler.handle(channelMention(), client, "mention");
+
+    // No heartbeat: only the final postMessage fires; chat.update untouched.
+    expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+    expect(client.chat.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "quick answer" }),
+    );
+    expect(client.chat.update).not.toHaveBeenCalled();
+  });
+
+  it("failing turn with placeholder: edits placeholder to error text, no stranded 'Thinking…'", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeRunnerWithProgress({
+      progressAt: [1_000, 9_500],
+      result: { ok: false, error: { kind: "max_turns" } },
+    });
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+    });
+    const client = makeClient({ placeholderTs: "ph-ts" });
+
+    await handler.handle(channelMention(), client, "mention");
+
+    // The placeholder was posted (first postMessage) — no second postMessage
+    // for the error; instead the placeholder was edited.
+    expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+    expect(client.chat.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ts: "ph-ts",
+        text: "Ran out of steps on this batch — try a smaller one.",
+      }),
+    );
+    // ❌ still added on the user's original message.
+    expect(client.reactions.add).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "x" }),
+    );
+  });
+
+  it("finalize falls back to postMessage if chat.update rejects", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeRunnerWithProgress({
+      progressAt: [1_000, 9_500],
+      result: {
+        ok: true,
+        response: { text: "final", duration_ms: 10_000, tool_calls: 2 },
+      },
+    });
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+    });
+    const client = makeClient({ placeholderTs: "ph-ts" });
+    // First chat.update (from finalize) fails; poster must fall back to
+    // chat.postMessage so the user still gets a reply.
+    client.chat.update.mockRejectedValueOnce(new Error("rate_limited"));
+
+    await handler.handle(channelMention(), client, "mention");
+
+    // Two postMessage calls: the placeholder + the fallback.
+    expect(client.chat.postMessage).toHaveBeenCalledTimes(2);
+    expect(client.chat.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ text: "final" }),
+    );
+  });
+});
 
 // ---------- factory smoke test ----------
 

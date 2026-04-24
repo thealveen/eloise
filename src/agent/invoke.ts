@@ -21,7 +21,7 @@
 //     from a prior successful turn) as `resume`.
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { AgentRequest, McpConfig } from "../types/index.js";
+import type { AgentRequest, Logger, McpConfig } from "../types/index.js";
 import { applyMessage, initAccumulator } from "./accumulate.js";
 
 export type InvokeDeps = {
@@ -29,6 +29,7 @@ export type InvokeDeps = {
   mcpConfig: McpConfig;
   cwd: string;
   model?: string;
+  logger: Logger;
 };
 
 export type InvokeResult = {
@@ -151,7 +152,25 @@ export async function invokeAgent(
         err.name = "AbortError";
         throw err;
       }
+      // Inspect the message BEFORE applyMessage so we can emit debug traces
+      // and detect tool_use batches for onProgress. Only look at shapes we
+      // care about; anything else falls through untouched.
+      const before = acc.tool_calls;
+      const lastTool = traceMessage(msg, deps.logger);
       applyMessage(acc, msg);
+      if (request.onProgress && acc.tool_calls > before) {
+        try {
+          request.onProgress({
+            tool_calls: acc.tool_calls,
+            last_tool: lastTool,
+          });
+        } catch (cbErr) {
+          deps.logger.debug("onProgress threw", {
+            error_message:
+              cbErr instanceof Error ? cbErr.message : String(cbErr),
+          });
+        }
+      }
     }
   } catch (err) {
     if (signal.aborted) {
@@ -178,4 +197,55 @@ export async function invokeAgent(
     sdk_duration_api_ms: acc.sdk_duration_api_ms,
     sdk_cost_usd: acc.sdk_cost_usd,
   };
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
+}
+
+// Emit per-message debug traces (option 3 of the heartbeat plan) and return
+// the name of the last tool_use block in an assistant batch, if any, so the
+// caller can forward it to onProgress. Kept separate from applyMessage so the
+// accumulator stays free of IO.
+function traceMessage(msg: unknown, logger: Logger): string | undefined {
+  if (!isRecord(msg)) return undefined;
+  const type = msg.type;
+
+  if (type === "assistant") {
+    const inner = msg.message;
+    if (!isRecord(inner)) return undefined;
+    const content = inner.content;
+    if (!Array.isArray(content)) return undefined;
+    let lastTool: string | undefined;
+    let textLen = 0;
+    for (const block of content) {
+      if (!isRecord(block)) continue;
+      if (block.type === "tool_use") {
+        const toolName =
+          typeof block.name === "string" ? block.name : "<unknown>";
+        const toolUseId =
+          typeof block.id === "string" ? block.id : undefined;
+        logger.debug("sdk tool_use", {
+          tool_name: toolName,
+          tool_use_id: toolUseId,
+        });
+        lastTool = toolName;
+      } else if (block.type === "text" && typeof block.text === "string") {
+        textLen += block.text.length;
+      }
+    }
+    if (lastTool === undefined && textLen > 0) {
+      logger.debug("sdk assistant text", { text_length: textLen });
+    }
+    return lastTool;
+  }
+
+  if (type === "result") {
+    logger.debug("sdk result", {
+      sdk_subtype: typeof msg.subtype === "string" ? msg.subtype : undefined,
+      sdk_num_turns:
+        typeof msg.num_turns === "number" ? msg.num_turns : undefined,
+    });
+  }
+  return undefined;
 }

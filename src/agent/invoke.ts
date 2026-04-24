@@ -282,6 +282,22 @@ function traceMessage(msg: unknown, logger: Logger): string | undefined {
         typeof msg.num_turns === "number" ? msg.num_turns : undefined,
     });
   }
+
+  // Surface SDKHookResponseMessage. Without this, a silently-failing hook
+  // matcher or misregistered callback is invisible in prod.
+  if (type === "system" && msg.subtype === "hook_response") {
+    const stdout = typeof msg.stdout === "string" ? msg.stdout : "";
+    const stderr = typeof msg.stderr === "string" ? msg.stderr : "";
+    logger.debug("sdk hook_response", {
+      hook_name: typeof msg.hook_name === "string" ? msg.hook_name : undefined,
+      hook_event:
+        typeof msg.hook_event === "string" ? msg.hook_event : undefined,
+      exit_code:
+        typeof msg.exit_code === "number" ? msg.exit_code : undefined,
+      stdout_preview: stdout.slice(0, 300),
+      stderr_preview: stderr.slice(0, 300),
+    });
+  }
   return undefined;
 }
 

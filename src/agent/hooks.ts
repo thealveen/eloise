@@ -49,12 +49,21 @@ export function unwrapSupabaseText(response: unknown): string | undefined {
 }
 
 export const unwrapSupabaseEnvelope: HookCallback = async (input) => {
+  process.stderr.write(
+    `[hook] fired event=${input.hook_event_name} tool=${
+      "tool_name" in input ? input.tool_name : "<none>"
+    }\n`,
+  );
   if (input.hook_event_name !== "PostToolUse") return {};
   if (!input.tool_name.startsWith(SUPABASE_PREFIX)) return {};
 
   const unwrapped = unwrapSupabaseText(input.tool_response);
-  if (unwrapped === undefined) return {};
+  if (unwrapped === undefined) {
+    process.stderr.write(`[hook] no-op: envelope shape did not match\n`);
+    return {};
+  }
 
+  process.stderr.write(`[hook] unwrapped len=${unwrapped.length}\n`);
   const original = input.tool_response as Record<string, unknown>;
   return {
     hookSpecificOutput: {

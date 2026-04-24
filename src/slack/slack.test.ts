@@ -811,14 +811,17 @@ describe("progress poster", () => {
     };
   }
 
-  it("long turn: posts placeholder after 8s, edits it on finalize, no extra postMessage", async () => {
+  it("long turn: posts placeholder after delay, edits it on finalize, no extra postMessage", async () => {
     const logger = makeLogger();
     const sessionResolver = makeSessionResolver();
+    // With PLACEHOLDER_DELAY_MS=3s: first event at 500ms arms the timer;
+    // the timer fires at 3500ms (before the 4000ms event). Later events
+    // hit the placeholder and trigger debounced edits.
     const agentRunner = makeRunnerWithProgress({
-      progressAt: [1_000, 9_500, 13_000], // progress at 1s, 9.5s, 13s
+      progressAt: [500, 4_000, 7_000],
       result: {
         ok: true,
-        response: { text: "final answer", duration_ms: 15_000, tool_calls: 3 },
+        response: { text: "final answer", duration_ms: 8_000, tool_calls: 3 },
       },
     });
     const handler = createEventHandler({
@@ -831,11 +834,9 @@ describe("progress poster", () => {
 
     await handler.handle(channelMention(), client, "mention");
 
-    // Exactly one postMessage — the placeholder that the poster posted at
-    // the 8s mark (fired by the 9.5s progress event, since the 1s event
-    // didn't arm the timer until after it set latestState — but the
-    // PLACEHOLDER_DELAY_MS timer was scheduled at 1s and fired at 9s,
-    // before the 9.5s event).
+    // Exactly one postMessage — the placeholder posted when the
+    // PLACEHOLDER_DELAY_MS timer fires (armed at 500ms, fires at 3500ms,
+    // well before the 4000ms event).
     expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
     expect(client.chat.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -886,7 +887,7 @@ describe("progress poster", () => {
     const logger = makeLogger();
     const sessionResolver = makeSessionResolver();
     const agentRunner = makeRunnerWithProgress({
-      progressAt: [1_000, 9_500],
+      progressAt: [500, 4_000],
       result: { ok: false, error: { kind: "max_turns" } },
     });
     const handler = createEventHandler({
@@ -918,7 +919,7 @@ describe("progress poster", () => {
     const logger = makeLogger();
     const sessionResolver = makeSessionResolver();
     const agentRunner = makeRunnerWithProgress({
-      progressAt: [1_000, 9_500],
+      progressAt: [500, 4_000],
       result: {
         ok: true,
         response: { text: "final", duration_ms: 10_000, tool_calls: 2 },

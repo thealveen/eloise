@@ -40,11 +40,13 @@ import { addReaction, removeReaction, type ReactionsClient } from "./reactions.j
 const THINKING = "thinking_face";
 const ERROR_MARK = "x";
 
-// Heartbeat tunables. Kept conservative to avoid Slack's `chat.update`
-// rate limit (~50/min per channel). The placeholder only appears if a turn
-// is still running after PLACEHOLDER_DELAY_MS; fast turns never see one.
-const PLACEHOLDER_DELAY_MS = 8_000;
-const UPDATE_DEBOUNCE_MS = 3_000;
+// Heartbeat tunables. The placeholder only appears if a tool_use fires
+// AND the turn is still running PLACEHOLDER_DELAY_MS after that first
+// tool call. Fast tool-using turns that finish before the timer elapses
+// never see a placeholder. Kept short enough that users don't stare at
+// a lone 🤔 wondering if the bot is stuck.
+const PLACEHOLDER_DELAY_MS = 3_000;
+const UPDATE_DEBOUNCE_MS = 2_000;
 
 /**
  * Minimal `client` surface the handler needs from Bolt's WebClient. Keeping

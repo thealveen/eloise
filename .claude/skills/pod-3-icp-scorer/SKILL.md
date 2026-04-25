@@ -34,10 +34,26 @@ Map the user's request to a `<filter>` from this cookbook. Combine with `AND` as
 - **Starred founders:** `applicant_person_id IN (SELECT id FROM person WHERE is_starred)`
 - **Specific founder:** `applicant_person_id = '<uuid>'`
 - **Specific company:** `company_id = '<uuid>'`
+- **Final feedback score ≥ X (avg across reviewers):** `id IN (SELECT application_id FROM feedback WHERE stage = 'final_interview' GROUP BY application_id HAVING AVG(recommendation_score) >= <X>)`
+- **First feedback score ≥ X (avg across reviewers):** same with `stage = 'first_interview'`
+- **Any reviewer at stage X scored ≥ Y:** `id IN (SELECT application_id FROM feedback WHERE stage = '<stage-slug>' AND recommendation_score >= <Y>)`
+- **Star-worthy in feedback:** `id IN (SELECT application_id FROM feedback WHERE (detailed_scores->>'starred_for_future')::bool = true OR (detailed_scores->>'potential_star')::bool = true)`
+- **Recommended to advance (any reviewer):** `id IN (SELECT application_id FROM feedback WHERE LOWER(move_to_next_round) IN ('yes','true'))`
 
 Stage slugs: `inbox_review`, `first_interview`, `final_interview`, `decision_pending`, `offer_extended`. For "accepted" / "rejected" terminals, use `evaluation_decision` directly — don't filter via `evaluation_stage_change`.
 
 Use `evaluation_stage_change` to identify apps that *reached* a stage, not `furthest_stage_id` — the latter only captures the latest stage, not the journey.
+
+**Feedback score semantics.** Feedback rows only exist at `first_interview` and `final_interview` stages, one row per reviewer per stage. "Feedback score" defaults to `recommendation_score` (1–5). For "score was X+" phrasing (the score is treated as one number per app), use the AVG entry. For "any reviewer rated X+", use the per-row entry. Don't invent other aggregations — pick one of the cookbook shapes.
+
+**Worked example.** "Score 10 rejected companies in W26 where the founder was starred and final feedback score was 4+":
+
+```
+cohort_id = (SELECT id FROM cohort WHERE shortname = 'W26')
+AND evaluation_decision = 'rejected'
+AND applicant_person_id IN (SELECT id FROM person WHERE is_starred)
+AND id IN (SELECT application_id FROM feedback WHERE stage = 'final_interview' GROUP BY application_id HAVING AVG(recommendation_score) >= 4)
+```
 
 **Escape hatch.** If no cookbook entry matches, write one WHERE in the skeleton above. Do not issue probing queries. If you need a column you don't know, tell the user and stop — do not explore the schema.
 

@@ -8,7 +8,7 @@ import type {
   McpConfig,
   SystemPrompt,
 } from "../types/index.js";
-import { invokeAgent } from "./invoke.js";
+import { invokeAgent, SdkResultError } from "./invoke.js";
 import { TimeoutError, withTimeout } from "./timeout.js";
 
 export function createAgentRunner(deps: {
@@ -17,6 +17,10 @@ export function createAgentRunner(deps: {
   timeoutMs: number;
   cwd: string;
   anthropicApiKey: string;
+  // Optional model override. Undefined → SDK default (currently Sonnet).
+  // Set via `AGENT_MODEL` env var. Accepts any CLI-recognized value,
+  // e.g. "claude-opus-4-7", "opus", "claude-sonnet-4-5".
+  model?: string;
   logger: Logger;
 }): AgentRunner {
   // The SDK reads ANTHROPIC_API_KEY from env. Set it once at factory time so
@@ -38,6 +42,8 @@ export function createAgentRunner(deps: {
               systemPrompt: deps.systemPrompt,
               mcpConfig: deps.mcpConfig,
               cwd: deps.cwd,
+              model: deps.model,
+              logger: deps.logger,
             },
             request,
             signal,
@@ -45,17 +51,11 @@ export function createAgentRunner(deps: {
         );
         const duration_ms = Date.now() - start;
 
-        if (
-          out.sdk_session_id &&
-          out.sdk_session_id !== request.session.session_id
-        ) {
-          deps.logger.warn("sdk session id drift", {
-            session_id: request.session.session_id,
-            slack_key: request.meta.slack_key,
-            sdk_session_id: out.sdk_session_id,
-          });
-        }
-
+        // Surface MCP server connection status and tool count so "bot says it
+        // has no MCP tools" is debuggable from logs alone. If `supabase` is
+        // `failed` / `needs-auth`, or no `mcp__supabase__*` names appear in
+        // `mcp_tools`, the Supabase PAT or URL is the culprit.
+        const mcp_tools = (out.tools ?? []).filter((t) => t.startsWith("mcp__"));
         deps.logger.info("agent ok", {
           status: "ok",
           duration_ms,
@@ -63,6 +63,18 @@ export function createAgentRunner(deps: {
           session_id: request.session.session_id,
           slack_key: request.meta.slack_key,
           user_id: request.meta.user_id,
+          sdk_session_id: out.sdk_session_id,
+          mcp_servers: out.mcp_servers,
+          mcp_tools_count: mcp_tools.length,
+          // SDK-reported run metadata. `text_length:0` + `sdk_subtype:"success"`
+          // means the model produced an empty synthesis; `sdk_subtype` other
+          // than "success" is a bug (should have thrown in invoke.ts).
+          sdk_subtype: out.sdk_subtype,
+          sdk_num_turns: out.sdk_num_turns,
+          sdk_is_error: out.sdk_is_error,
+          sdk_duration_api_ms: out.sdk_duration_api_ms,
+          sdk_cost_usd: out.sdk_cost_usd,
+          text_length: out.text.length,
         });
 
         return {
@@ -71,11 +83,20 @@ export function createAgentRunner(deps: {
             text: out.text,
             duration_ms,
             tool_calls: out.tool_calls,
+            sdk_session_id: out.sdk_session_id,
+            sdk_subtype: out.sdk_subtype,
+            sdk_num_turns: out.sdk_num_turns,
           },
         };
       } catch (err) {
         const duration_ms = Date.now() - start;
         const error = mapError(err, sanitize);
+        // Cap errors[] surface at 3 entries × 200 chars so a runaway SDK
+        // error stream doesn't blow out log lines.
+        const sdk_errors =
+          err instanceof SdkResultError
+            ? err.errors.slice(0, 3).map((s) => sanitize(s).slice(0, 200))
+            : undefined;
         deps.logger.error("agent failed", {
           status: error.kind === "timeout" ? "timeout" : "error",
           duration_ms,
@@ -84,6 +105,9 @@ export function createAgentRunner(deps: {
           user_id: request.meta.user_id,
           error_kind: error.kind,
           error_message: errorMessage(error),
+          sdk_subtype:
+            err instanceof SdkResultError ? err.subtype : undefined,
+          sdk_errors,
         });
         return { ok: false, error };
       }
@@ -91,8 +115,17 @@ export function createAgentRunner(deps: {
   };
 }
 
+// Text the CLI returns on auth/usage rejections. "Invalid API key · Please run
+// /login" shows up for both a bad key AND the Anthropic usage-limit cap — the
+// CLI reuses that string. Keep the pattern broad but specific enough not to
+// swallow generic API errors.
+const AUTH_ERROR_PATTERN =
+  /invalid api key|please run \/login|usage limit|rate[_ -]?limit|quota/i;
+
 function errorMessage(e: AgentError): string | undefined {
-  if (e.kind === "timeout" || e.kind === "rate_limit") return undefined;
+  if (e.kind === "timeout" || e.kind === "rate_limit" || e.kind === "max_turns") {
+    return undefined;
+  }
   return e.message;
 }
 
@@ -104,6 +137,27 @@ function mapError(
 
   if (isRecord(err) && typeof err.name === "string" && err.name === "AbortError") {
     return { kind: "timeout" };
+  }
+
+  if (err instanceof SdkResultError) {
+    if (err.subtype === "error_max_turns") return { kind: "max_turns" };
+    // Synthetic subtype from accumulate.ts for `subtype:"success",
+    // is_error:true` — the CLI's own words for an API/auth rejection.
+    if (err.subtype === "success_with_error") {
+      const first = err.errors[0] ?? "";
+      if (AUTH_ERROR_PATTERN.test(first)) {
+        return { kind: "auth_error", message: sanitize(first) };
+      }
+      return {
+        kind: "api_error",
+        message: sanitize(err.errors.join("; ")),
+      };
+    }
+    const joined = err.errors.join("; ");
+    return {
+      kind: "sdk_error",
+      message: sanitize(`${err.subtype}: ${joined}`),
+    };
   }
 
   const status =

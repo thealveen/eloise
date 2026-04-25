@@ -12,6 +12,25 @@ export type Accumulator = {
   text: string;
   tool_calls: number;
   sdk_session_id?: string;
+  // Populated from the `system` init message. Useful as a diagnostic when
+  // the agent reports "I don't have MCP tooling" — that usually means the
+  // supabase server's status here is `failed` or `needs-auth`, or no
+  // `mcp__supabase__*` names appear in `tools`.
+  mcp_servers?: { name: string; status: string }[];
+  tools?: string[];
+  // Fields lifted from the final `result` message. These are the SDK's
+  // authoritative view of how the run ended — we surface them in logs so
+  // failures like `error_max_turns` don't require log archaeology.
+  sdk_subtype?: string;
+  sdk_num_turns?: number;
+  sdk_is_error?: boolean;
+  sdk_duration_api_ms?: number;
+  sdk_cost_usd?: number;
+  // Present only when subtype is non-success; the SDK lists its errors here.
+  sdk_errors?: string[];
+  // Populated when subtype is non-success. invoke.ts converts this into a
+  // thrown error that flows through mapError → AgentError.
+  result_error?: { subtype: string; errors: string[] };
 };
 
 export function initAccumulator(): Accumulator {
@@ -31,12 +50,63 @@ export function applyMessage(acc: Accumulator, msg: unknown): void {
   if (type === "system") {
     const sessionId = msg.session_id;
     if (typeof sessionId === "string") acc.sdk_session_id = sessionId;
+    if (Array.isArray(msg.mcp_servers)) {
+      acc.mcp_servers = msg.mcp_servers
+        .filter(
+          (s): s is { name: string; status: string } =>
+            isRecord(s) &&
+            typeof s.name === "string" &&
+            typeof s.status === "string",
+        )
+        .map((s) => ({ name: s.name, status: s.status }));
+    }
+    if (Array.isArray(msg.tools)) {
+      acc.tools = msg.tools.filter((t): t is string => typeof t === "string");
+    }
     return;
   }
 
   if (type === "result") {
     const sessionId = msg.session_id;
     if (typeof sessionId === "string") acc.sdk_session_id = sessionId;
+
+    const subtype = typeof msg.subtype === "string" ? msg.subtype : undefined;
+    if (subtype) acc.sdk_subtype = subtype;
+    if (typeof msg.num_turns === "number") acc.sdk_num_turns = msg.num_turns;
+    if (typeof msg.is_error === "boolean") acc.sdk_is_error = msg.is_error;
+    if (typeof msg.duration_api_ms === "number") {
+      acc.sdk_duration_api_ms = msg.duration_api_ms;
+    }
+    if (typeof msg.total_cost_usd === "number") {
+      acc.sdk_cost_usd = msg.total_cost_usd;
+    }
+
+    if (subtype === "success") {
+      // The SDK's canonical synthesis text. Authoritative — overrides our
+      // per-assistant-message concat, which can end up empty when a run
+      // consists entirely of tool_use turns with no trailing text-only
+      // message.
+      if (typeof msg.result === "string") acc.text = msg.result;
+      // The CLI can emit subtype:"success" WITH is_error:true when the
+      // Anthropic API rejects the call (usage limit, bogus key). The
+      // `result` string carries the human-readable reason. Treat this as
+      // a terminal error under a synthetic subtype so invoke.ts surfaces
+      // it instead of the generic "exited with code 1".
+      if (msg.is_error === true) {
+        const errMsg = typeof msg.result === "string" ? msg.result : "";
+        acc.sdk_errors = errMsg ? [errMsg] : [];
+        acc.result_error = {
+          subtype: "success_with_error",
+          errors: errMsg ? [errMsg] : [],
+        };
+      }
+    } else if (subtype) {
+      const errors = Array.isArray(msg.errors)
+        ? msg.errors.filter((e): e is string => typeof e === "string")
+        : [];
+      acc.sdk_errors = errors;
+      acc.result_error = { subtype, errors };
+    }
     return;
   }
 
@@ -45,12 +115,27 @@ export function applyMessage(acc: Accumulator, msg: unknown): void {
     if (!isRecord(inner)) return;
     const content = inner.content;
     if (!Array.isArray(content)) return;
+    // Messages that include a tool_use block are think-act steps, not the
+    // final synthesis. Any text in them is narration ("Let me check X"),
+    // which we don't want in the Slack reply. Drop the narration AND reset
+    // any previously-accumulated narration from earlier steps so only text
+    // emitted after the last tool call survives.
+    const hasToolUse = content.some(
+      (b) => isRecord(b) && b.type === "tool_use",
+    );
+    if (hasToolUse) {
+      acc.text = "";
+      for (const block of content) {
+        if (isRecord(block) && block.type === "tool_use") {
+          acc.tool_calls += 1;
+        }
+      }
+      return;
+    }
     for (const block of content) {
       if (!isRecord(block)) continue;
       if (block.type === "text" && typeof block.text === "string") {
         acc.text += block.text;
-      } else if (block.type === "tool_use") {
-        acc.tool_calls += 1;
       }
     }
   }

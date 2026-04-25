@@ -19,7 +19,7 @@ You need four things before you touch the server: a Slack app with two tokens, a
    ```yaml
    display_information:
      name: Slack Bot
-     description: Answers @mentions via the Claude Agent SDK.
+     description: Answers @mentions and continues threads via the Claude Agent SDK.
    features:
      bot_user:
        display_name: Slack Bot
@@ -30,10 +30,18 @@ You need four things before you touch the server: a Slack app with two tokens, a
          - app_mentions:read
          - chat:write
          - reactions:write
+         - channels:history
+         - groups:history
+         - im:history
+         - mpim:history
    settings:
      event_subscriptions:
        bot_events:
          - app_mention
+         - message.channels
+         - message.groups
+         - message.im
+         - message.mpim
      interactivity:
        is_enabled: false
      org_deploy_enabled: false
@@ -41,10 +49,22 @@ You need four things before you touch the server: a Slack app with two tokens, a
      token_rotation_enabled: false
    ```
 
+   The `message.*` subscriptions + `*:history` scopes are what let the bot continue a thread without being re-@mentioned on every reply. The handler only *acts* on explicit mentions and thread replies in active sessions, but with these scopes the bot *can see* every message in any channel it's been added to. Don't add it to sensitive channels you wouldn't want it reading.
+
 4. In the left sidebar, click **Install App** → **Install to Workspace** → **Allow**. Copy the **Bot User OAuth Token** (starts with `xoxb-`). This is `SLACK_BOT_TOKEN`.
 5. Click **Basic Information** → scroll to **App-Level Tokens** → **Generate Token and Scopes**. Give it any name; add scope **`connections:write`**; click **Generate**. Copy the token (starts with `xapp-`). This is `SLACK_APP_TOKEN`.
 
 Tokens are only shown once. Paste them into a password manager or a scratch note you'll paste from later.
+
+### 1a.i. Updating an existing install
+
+If you already installed the bot with an older manifest (or your bot only replies when @-mentioned), re-grant scopes:
+
+1. Open your app at <https://api.slack.com/apps> → pick your app.
+2. Sidebar → **App Manifest** → replace the YAML with the block above → **Save Changes**.
+3. Slack detects the new scopes and shows a yellow **Reinstall your app** banner at the top. Click it → **Allow**.
+4. Your `SLACK_BOT_TOKEN` does not change; no `.env` edit required.
+5. No restart needed — the bot's Socket Mode connection picks up the newly-granted events immediately. (Restart if you want, it's harmless.)
 
 ### 1b. Anthropic API key
 
@@ -95,7 +115,8 @@ What it does (in order), with each step printing a `===> step N: ...` banner:
 4. creates an unprivileged `botuser` (no sudo, password login locked)
 5. clones (or updates) the repo to `/home/botuser/slack-bot`
 6. creates `/home/botuser/agent-workdir` and `/home/botuser/slack-bot/data/`
-7. runs `npm ci`, `npm run build`, `npm run init-db` as `botuser`
+7. symlinks `agent-workdir/.claude` → `slack-bot/.claude` so the Agent SDK can find `.claude/skills/` from its cwd
+8. runs `npm ci`, `npm run build`, `npm run init-db` as `botuser`
 
 Typical runtime: 2–4 minutes on a fresh box; faster on a re-run. The script is idempotent — re-run it any time.
 
@@ -162,6 +183,8 @@ In Slack, invite the bot to a channel and mention it:
 
 Expected: within a second or two the bot adds a 👀 reaction to your message; within ~30 seconds, it posts a reply in the same thread and swaps the reaction to ✅.
 
+If you delete the original @mention, the bot cleans up after itself: it deletes every reply it posted in that thread and drops the session row, so the thread disappears entirely instead of leaving orphan bot messages. No manifest or scope changes are needed — `message_deleted` rides on the existing `message.*` subscriptions and `chat:write` covers `chat.delete` on bot-authored messages.
+
 If nothing happens: `pm2 logs slack-bot` and check the troubleshooting table below.
 
 ## Deploying updates
@@ -176,6 +199,16 @@ pm2 reload slack-bot
 ```
 
 If `.env.example` gained a new variable, `pm2 logs` will show `missing env var: X`. Add it to `.env`, then `pm2 restart slack-bot` (reload won't re-read env on its own).
+
+## Updating env vars
+
+Edit `~/slack-bot/.env` (as `botuser`), then:
+
+```sh
+sudo -u botuser pm2 restart slack-bot
+```
+
+Use `restart`, not `reload`. `reload` keeps the old env vars in memory; `restart` kills the process and picks up the new `.env` via our `dotenv/config` import. Verify with `pm2 logs slack-bot` — you should see `bot started` again within a second.
 
 ## Troubleshooting
 

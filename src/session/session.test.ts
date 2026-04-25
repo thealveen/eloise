@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Logger, NormalizedEvent } from "../types/index.js";
 import { createSessionResolver } from "./index.js";
-import { openSessionDb } from "./sqlite.js";
+import { createBotReplyStore, openSessionDb } from "./sqlite.js";
 import { createResolverFromDb, slackKey } from "./resolver.js";
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -107,5 +107,64 @@ describe("createSessionResolver", () => {
 
     expect(a.session_id).not.toBe(b.session_id);
     expect(b.is_new).toBe(true);
+  });
+
+  it("update() overwrites the session_id for an existing row", async () => {
+    const resolver = createSessionResolver({ dbPath: ":memory:", logger: silentLogger() });
+    const event = makeEvent("C1", "1700000000.000001");
+
+    const first = await resolver.resolve(event);
+    await resolver.update(first.slack_key, "sdk-real-id");
+
+    const after = await resolver.resolve(event);
+    expect(after.session_id).toBe("sdk-real-id");
+    expect(after.is_new).toBe(false);
+  });
+
+  it("drop() removes the row so the next resolve is a fresh session", async () => {
+    const resolver = createSessionResolver({ dbPath: ":memory:", logger: silentLogger() });
+    const event = makeEvent("C1", "1700000000.000001");
+
+    const first = await resolver.resolve(event);
+    expect(first.is_new).toBe(true);
+    await resolver.drop(first.slack_key);
+    expect(await resolver.exists("C1", "1700000000.000001")).toBe(false);
+
+    const second = await resolver.resolve(event);
+    expect(second.is_new).toBe(true);
+    expect(second.session_id).not.toBe(first.session_id);
+  });
+});
+
+describe("createBotReplyStore", () => {
+  it("records, lists, and drops per (channel, thread)", () => {
+    const sdb = openSessionDb(":memory:");
+    const store = createBotReplyStore(sdb.db);
+
+    store.record("C1", "t1", "r1a");
+    store.record("C1", "t1", "r1b");
+    store.record("C1", "t2", "r2a");
+    store.record("C2", "t1", "r3a"); // same thread_ts, different channel
+
+    expect(store.list("C1", "t1")).toEqual(["r1a", "r1b"]);
+    expect(store.list("C1", "t2")).toEqual(["r2a"]);
+    expect(store.list("C2", "t1")).toEqual(["r3a"]);
+    expect(store.list("C1", "nope")).toEqual([]);
+
+    store.drop("C1", "t1");
+    expect(store.list("C1", "t1")).toEqual([]);
+    // Other rows are untouched.
+    expect(store.list("C1", "t2")).toEqual(["r2a"]);
+    expect(store.list("C2", "t1")).toEqual(["r3a"]);
+  });
+
+  it("record is idempotent on the composite primary key", () => {
+    const sdb = openSessionDb(":memory:");
+    const store = createBotReplyStore(sdb.db);
+
+    store.record("C1", "t1", "dup");
+    store.record("C1", "t1", "dup");
+
+    expect(store.list("C1", "t1")).toEqual(["dup"]);
   });
 });

@@ -22,15 +22,13 @@ ecosystem.config.cjs
 
 Each component directory has exactly one public entry (`index.ts`). Other components import only from the entry module or from `src/types/`. See spec §10.2.
 
-## Setup
+## Running locally
 
-```sh
-npm install
-cp .env.example .env   # fill in values
-npm run init-db        # creates data/sessions.db
-npm run build
-npm start
-```
+To run the bot on your laptop against real Slack, Anthropic, and Supabase — see `docs/LOCAL.md`. For VPS deployment under pm2, see `docs/DEPLOY.md`.
+
+## Behavior notes
+
+- Deleting the starting message of a thread cascades: the bot deletes every reply it posted in that thread and forgets the session. No Slack scope changes are needed for this.
 
 ## Development
 

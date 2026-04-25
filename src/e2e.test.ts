@@ -28,7 +28,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 // Import AFTER vi.mock so transitive imports see the stubbed SDK.
 const { loadSystemPrompt } = await import("./prompt/index.js");
 const { loadMcpConfig } = await import("./mcp/index.js");
-const { createSessionResolver } = await import("./session/index.js");
+const { createSessionStores } = await import("./session/index.js");
 const { createAgentRunner } = await import("./agent/index.js");
 const { createEventHandler } = await import("./slack/handler.js");
 const { createDedup } = await import("./slack/dedup.js");
@@ -92,7 +92,7 @@ describe("E2E: real factories, mocked SDK + Slack client", () => {
     const mcpConfig = loadMcpConfig({
       SUPABASE_MCP_TOKEN: "sbp_dummy",
     } as NodeJS.ProcessEnv);
-    const sessionResolver = createSessionResolver({
+    const { sessionResolver, botReplyStore } = createSessionStores({
       dbPath: ":memory:",
       logger,
     });
@@ -109,6 +109,7 @@ describe("E2E: real factories, mocked SDK + Slack client", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore,
     });
     return { handler, sessionResolver };
   }
@@ -160,15 +161,15 @@ describe("E2E: real factories, mocked SDK + Slack client", () => {
     expect(second.is_new).toBe(false);
   });
 
-  it("follow-up in same thread resumes the stored session_id via SDK", async () => {
+  it("follow-up in same thread resumes using the SDK-minted id", async () => {
     mockStream = () =>
       gen([
-        { type: "system", subtype: "init", session_id: "sdk-resumed" },
+        { type: "system", subtype: "init", session_id: "sdk-first" },
         {
           type: "assistant",
           message: { content: [{ type: "text", text: "ack" }] },
         },
-        { type: "result", subtype: "success" },
+        { type: "result", subtype: "success", session_id: "sdk-first" },
       ]);
 
     const { handler } = wireStack();
@@ -189,14 +190,11 @@ describe("E2E: real factories, mocked SDK + Slack client", () => {
     );
 
     expect(queryCalls).toHaveLength(2);
-    // First call: `resume` is whatever UUID the Session Resolver minted.
-    const firstResume = queryCalls[0].options.resume;
-    const secondResume = queryCalls[1].options.resume;
-    expect(firstResume).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
-    );
-    // Critical property: the SDK gets the SAME resume id on the second call.
-    expect(secondResume).toBe(firstResume);
+    // Turn 1: no `resume` — brand-new thread, SDK mints its own id.
+    expect(queryCalls[0].options.resume).toBeUndefined();
+    // Turn 2: resume with the SDK's minted id from turn 1, not the UUID
+    // our resolver originally inserted.
+    expect(queryCalls[1].options.resume).toBe("sdk-first");
 
     // And we posted two replies, one per turn.
     expect(client.chat.postMessage).toHaveBeenCalledTimes(2);
@@ -221,5 +219,22 @@ describe("E2E: real factories, mocked SDK + Slack client", () => {
     expect(posted.thread_ts).toBe("1700000000.000100");
     expect(typeof posted.text).toBe("string");
     expect(posted.text.length).toBeGreaterThan(0);
+  });
+
+  it("first-turn failure drops the session row so retries start clean", async () => {
+    mockStream = () => {
+      throw new Error("upstream fire");
+    };
+
+    const { handler, sessionResolver } = wireStack();
+    const client = makeSlackClient();
+
+    await handler.handle(rawAppMention(), client, "mention");
+
+    // Row must NOT exist — keeping it would pin this thread to a UUID the
+    // SDK will reject on every future attempt.
+    expect(
+      await sessionResolver.exists("C_E2E", "1700000000.000100"),
+    ).toBe(false);
   });
 });

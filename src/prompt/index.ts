@@ -18,14 +18,36 @@ import type { SystemPrompt } from "../types/index.js";
  * check is important because booting with a blank prompt would silently ship
  * a bot with no behavioral rules — the model would freelance on style,
  * formatting, and the K7 write-confirmation contract.
+ *
+ * Optional `appends` are loaded and concatenated after the base prompt, each
+ * under its own scoped heading. Used to attach the DB schema reference so the
+ * model doesn't need `list_tables` / `describe_table` introspection calls to
+ * write queries.
  */
-export function loadSystemPrompt(path: string): SystemPrompt {
-  let contents: string;
+export type PromptAppend = { heading: string; path: string };
+
+export function loadSystemPrompt(
+  path: string,
+  appends: PromptAppend[] = [],
+): SystemPrompt {
+  const base = readPromptFile(path);
+  if (base.trim().length === 0) {
+    throw new Error(`system prompt file is empty: ${path}`);
+  }
+
+  const parts: string[] = [base];
+  for (const a of appends) {
+    const body = readPromptFile(a.path);
+    if (body.trim().length === 0) continue;
+    parts.push(`\n---\n\n## ${a.heading}\n\n${body}`);
+  }
+  return parts.join("\n");
+}
+
+function readPromptFile(path: string): string {
   try {
-    contents = readFileSync(path, "utf8");
+    return readFileSync(path, "utf8");
   } catch (err) {
-    // Distinguish "not found" (fixable by the operator) from other I/O
-    // failures (permissions, etc.) so the error message is actionable.
     if (
       err instanceof Error &&
       "code" in err &&
@@ -35,10 +57,4 @@ export function loadSystemPrompt(path: string): SystemPrompt {
     }
     throw err;
   }
-
-  if (contents.trim().length === 0) {
-    throw new Error(`system prompt file is empty: ${path}`);
-  }
-
-  return contents;
 }

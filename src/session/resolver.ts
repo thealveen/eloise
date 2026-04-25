@@ -52,5 +52,17 @@ export function createResolverFromDb(
       const row = sdb.existsBySlackKey.get(slackKey(channel_id, thread_ts));
       return Promise.resolve(row !== undefined);
     },
+
+    update(slack_key: string, session_id: string): Promise<void> {
+      sdb.updateSessionId.run(session_id, clock(), slack_key);
+      logger.debug("session_id_updated", { slack_key, session_id });
+      return Promise.resolve();
+    },
+
+    drop(slack_key: string): Promise<void> {
+      sdb.deleteByKey.run(slack_key);
+      logger.debug("session_dropped", { slack_key });
+      return Promise.resolve();
+    },
   };
 }

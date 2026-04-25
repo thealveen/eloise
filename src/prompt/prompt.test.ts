@@ -50,4 +50,19 @@ describe("loadSystemPrompt", () => {
 
     expect(() => loadSystemPrompt(path)).toThrow(/empty/);
   });
+
+  it("appends extra files under scoped headings", () => {
+    const basePath = join(dir, "system.md");
+    const schemaPath = join(dir, "schema.md");
+    writeFileSync(basePath, "Be terse.", "utf8");
+    writeFileSync(schemaPath, "table foo(id uuid)", "utf8");
+
+    const out = loadSystemPrompt(basePath, [
+      { heading: "Postgres schema", path: schemaPath },
+    ]);
+
+    expect(out).toContain("Be terse.");
+    expect(out).toContain("## Postgres schema");
+    expect(out).toContain("table foo(id uuid)");
+  });
 });

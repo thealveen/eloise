@@ -16,7 +16,12 @@
  * factory signature this module conforms to.
  */
 
-import type { AgentRunner, Logger, SessionResolver } from "../types/index.js";
+import type {
+  AgentRunner,
+  BotReplyStore,
+  Logger,
+  SessionResolver,
+} from "../types/index.js";
 import { createBoltApp } from "./bolt-client.js";
 import { createDedup } from "./dedup.js";
 import { createEventHandler } from "./handler.js";
@@ -30,6 +35,7 @@ export function createSlackAdapter(deps: {
   appToken: string;
   sessionResolver: SessionResolver;
   agentRunner: AgentRunner;
+  botReplyStore: BotReplyStore;
   logger: Logger;
 }): { start(): Promise<void>; stop(): Promise<void> } {
   const dedup = createDedup({ ttlMs: DEDUP_TTL_MS });
@@ -39,6 +45,7 @@ export function createSlackAdapter(deps: {
     agentRunner: deps.agentRunner,
     logger: deps.logger,
     dedup,
+    botReplyStore: deps.botReplyStore,
   });
 
   const bolt = createBoltApp({

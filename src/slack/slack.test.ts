@@ -14,6 +14,7 @@ import type {
   AgentError,
   AgentResult,
   AgentRunner,
+  BotReplyStore,
   Logger,
   NormalizedEvent,
   SessionHandle,
@@ -22,7 +23,12 @@ import type {
 import { createDedup } from "./dedup.js";
 import { formatErrorMessage } from "./format.js";
 import { createEventHandler, type SlackClient } from "./handler.js";
-import { isThreadReply, normalize, type RawSlackEvent } from "./normalize.js";
+import {
+  isThreadReply,
+  normalize,
+  normalizeDeletion,
+  type RawSlackEvent,
+} from "./normalize.js";
 
 // ---------- shared test fixtures ----------
 
@@ -42,22 +48,71 @@ function makeSessionResolver(handle: Partial<SessionHandle> = {}): SessionResolv
     is_new: handle.is_new ?? false,
     slack_key: handle.slack_key ?? "C123:1700000000.000100",
   };
-  return { resolve: vi.fn().mockResolvedValue(full) };
+  return {
+    resolve: vi.fn().mockResolvedValue(full),
+    exists: vi.fn().mockResolvedValue(true),
+    update: vi.fn().mockResolvedValue(undefined),
+    drop: vi.fn().mockResolvedValue(undefined),
+  };
 }
 
 function makeAgentRunner(result: AgentResult): AgentRunner {
   return { run: vi.fn().mockResolvedValue(result) };
 }
 
-function makeClient(): SlackClient & {
-  chat: { postMessage: ReturnType<typeof vi.fn> };
+type FakeBotReplyStore = BotReplyStore & {
+  calls: { record: string[][]; drop: string[][] };
+  peek(channel_id: string, thread_ts: string): string[];
+};
+
+function makeBotReplyStore(): FakeBotReplyStore {
+  const rows = new Map<string, string[]>();
+  const key = (c: string, t: string) => `${c}::${t}`;
+  const calls: FakeBotReplyStore["calls"] = { record: [], drop: [] };
+  return {
+    calls,
+    record(channel_id, thread_ts, reply_ts) {
+      calls.record.push([channel_id, thread_ts, reply_ts]);
+      const k = key(channel_id, thread_ts);
+      const list = rows.get(k) ?? [];
+      if (!list.includes(reply_ts)) list.push(reply_ts);
+      rows.set(k, list);
+    },
+    list(channel_id, thread_ts) {
+      return rows.get(key(channel_id, thread_ts))?.slice() ?? [];
+    },
+    drop(channel_id, thread_ts) {
+      calls.drop.push([channel_id, thread_ts]);
+      rows.delete(key(channel_id, thread_ts));
+    },
+    peek(channel_id, thread_ts) {
+      return rows.get(key(channel_id, thread_ts))?.slice() ?? [];
+    },
+  };
+}
+
+function makeClient(opts: { placeholderTs?: string } = {}): SlackClient & {
+  chat: {
+    postMessage: ReturnType<typeof vi.fn>;
+    update: ReturnType<typeof vi.fn>;
+    delete: ReturnType<typeof vi.fn>;
+  };
   reactions: {
     add: ReturnType<typeof vi.fn>;
     remove: ReturnType<typeof vi.fn>;
   };
 } {
   return {
-    chat: { postMessage: vi.fn().mockResolvedValue({ ok: true }) },
+    chat: {
+      // Return a ts so the poster can capture it as the placeholder id when
+      // the heartbeat path fires. Defaults to "posted-ts"; tests that care
+      // can override.
+      postMessage: vi
+        .fn()
+        .mockResolvedValue({ ok: true, ts: opts.placeholderTs ?? "posted-ts" }),
+      update: vi.fn().mockResolvedValue({ ok: true }),
+      delete: vi.fn().mockResolvedValue({ ok: true }),
+    },
     reactions: {
       add: vi.fn().mockResolvedValue({ ok: true }),
       remove: vi.fn().mockResolvedValue({ ok: true }),
@@ -190,6 +245,36 @@ describe("isThreadReply", () => {
   });
 });
 
+describe("normalizeDeletion", () => {
+  it("returns channel + deleted_ts for a message_deleted event", () => {
+    expect(
+      normalizeDeletion({
+        type: "message",
+        subtype: "message_deleted",
+        channel: "C1",
+        deleted_ts: "1700000000.000100",
+      }),
+    ).toEqual({ channel_id: "C1", deleted_ts: "1700000000.000100" });
+  });
+
+  it("returns null for non-deletion subtypes", () => {
+    expect(normalizeDeletion({ subtype: "bot_message", channel: "C1" })).toBeNull();
+    expect(
+      normalizeDeletion({ subtype: "message_changed", channel: "C1", deleted_ts: "x" }),
+    ).toBeNull();
+    expect(normalizeDeletion({ channel: "C1" })).toBeNull();
+  });
+
+  it("returns null when channel or deleted_ts is missing", () => {
+    expect(
+      normalizeDeletion({ subtype: "message_deleted", deleted_ts: "x" }),
+    ).toBeNull();
+    expect(
+      normalizeDeletion({ subtype: "message_deleted", channel: "C1" }),
+    ).toBeNull();
+  });
+});
+
 // ---------- formatErrorMessage ----------
 
 describe("formatErrorMessage", () => {
@@ -199,6 +284,11 @@ describe("formatErrorMessage", () => {
     { error: { kind: "api_error", message: "boom" }, expected: "Something went wrong." },
     { error: { kind: "mcp_error", message: "boom" }, expected: "Something went wrong." },
     { error: { kind: "unknown", message: "boom" }, expected: "Something went wrong." },
+    {
+      error: { kind: "auth_error", message: "Invalid API key" },
+      expected:
+        "Claude API rejected the request — usage limit or key issue. Ping Alvin.",
+    },
   ];
 
   for (const { error, expected } of cases) {
@@ -252,6 +342,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -272,12 +363,16 @@ describe("event handler", () => {
     // Resolver received the normalized event.
     expect(sessionResolver.resolve).toHaveBeenCalledTimes(1);
 
-    // Runner received the right session + text.
-    expect(agentRunner.run).toHaveBeenCalledWith({
-      session: expect.objectContaining({ session_id: "sess-1" }),
-      user_text: "hello there",
-      meta: { user_id: "U999", slack_key: "C123:1700000000.000100" },
-    });
+    // Runner received the right session + text. Use objectContaining at
+    // the top level because the handler also wires in an `onProgress`
+    // callback from the heartbeat poster.
+    expect(agentRunner.run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        session: expect.objectContaining({ session_id: "sess-1" }),
+        user_text: "hello there",
+        meta: { user_id: "U999", slack_key: "C123:1700000000.000100" },
+      }),
+    );
 
     // postMessage in-thread, text passed through unmodified.
     expect(client.chat.postMessage).toHaveBeenCalledWith({
@@ -346,6 +441,140 @@ describe("event handler", () => {
     );
   });
 
+  it("AgentError max_turns -> posts friendly 'ran out of steps' with ❌", async () => {
+    await assertErrorMapping(
+      { kind: "max_turns" },
+      "Ran out of steps on this batch — try a smaller one.",
+      "error",
+    );
+  });
+
+  it("AgentError sdk_error -> posts 'Something went wrong.' with ❌", async () => {
+    await assertErrorMapping(
+      { kind: "sdk_error", message: "error_during_execution: boom" },
+      "Something went wrong.",
+      "error",
+    );
+  });
+
+  it("AgentError auth_error -> posts friendly auth message with ❌ and logs error_message", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeAgentRunner({
+      ok: false,
+      error: { kind: "auth_error", message: "Invalid API key · Please run /login" },
+    });
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
+    });
+    const client = makeClient();
+
+    await handler.handle(channelMention(), client, "mention");
+
+    expect(client.reactions.add).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "x" }),
+    );
+    expect(client.chat.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Claude API rejected the request — usage limit or key issue. Ping Alvin.",
+      }),
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      "turn error",
+      expect.objectContaining({
+        status: "error",
+        error_message: expect.stringContaining("auth_error"),
+      }),
+    );
+  });
+
+  it("empty text response: posts fallback, adds ❌, logs turn error with text_length:0", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeAgentRunner({
+      ok: true,
+      response: {
+        text: "",
+        duration_ms: 42,
+        tool_calls: 3,
+        sdk_subtype: "success",
+        sdk_num_turns: 5,
+      },
+    });
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
+    });
+    const client = makeClient();
+
+    await handler.handle(channelMention(), client, "mention");
+
+    expect(client.reactions.add).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "x" }),
+    );
+    expect(client.chat.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Got no response — try again or rephrase.",
+      }),
+    );
+    // Never called with empty text — that's the whole point.
+    expect(client.chat.postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: "" }),
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      "turn error",
+      expect.objectContaining({
+        status: "error",
+        error_message: "empty response",
+        text_length: 0,
+        sdk_subtype: "success",
+        sdk_num_turns: 5,
+      }),
+    );
+  });
+
+  it("turn ok log includes text_length and sdk_subtype from the agent response", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeAgentRunner({
+      ok: true,
+      response: {
+        text: "hello world",
+        duration_ms: 42,
+        tool_calls: 1,
+        sdk_subtype: "success",
+        sdk_num_turns: 3,
+      },
+    });
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
+    });
+    const client = makeClient();
+
+    await handler.handle(channelMention(), client, "mention");
+
+    expect(logger.info).toHaveBeenCalledWith(
+      "turn ok",
+      expect.objectContaining({
+        status: "ok",
+        text_length: 11,
+        sdk_subtype: "success",
+        sdk_num_turns: 3,
+      }),
+    );
+  });
+
   it("ignores duplicate message_ts within TTL (no resolver/runner calls)", async () => {
     const logger = makeLogger();
     const sessionResolver = makeSessionResolver();
@@ -358,6 +587,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -382,6 +612,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -390,6 +621,34 @@ describe("event handler", () => {
     await handler.handle(raw, client, "message");
 
     expect(agentRunner.run).toHaveBeenCalledTimes(1);
+  });
+
+  // Regression: when Slack delivers the `message.channels` event BEFORE the
+  // paired `app_mention` for the same ts, we must not let the gated-out
+  // message event burn the dedup slot — otherwise the @mention silently
+  // drops and the bot never replies.
+  it("processes @mention when message.channels arrives before app_mention", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeAgentRunner({
+      ok: true,
+      response: { text: "ok", duration_ms: 1, tool_calls: 0 },
+    });
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
+    });
+    const client = makeClient();
+
+    const raw = channelMention();
+    await handler.handle(raw, client, "message"); // K4 drops without marking
+    await handler.handle(raw, client, "mention"); // must still run
+
+    expect(agentRunner.run).toHaveBeenCalledTimes(1);
+    expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
   });
 
   it("channel non-mention top-level message is ignored (no reactions, no resolve)", async () => {
@@ -404,6 +663,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -439,6 +699,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -479,6 +740,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -517,6 +779,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -542,6 +805,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -581,6 +845,7 @@ describe("event handler", () => {
       agentRunner,
       logger,
       dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
     });
     const client = makeClient();
 
@@ -589,6 +854,166 @@ describe("event handler", () => {
 
     expect(sessionResolver.resolve).not.toHaveBeenCalled();
     expect(agentRunner.run).not.toHaveBeenCalled();
+  });
+});
+
+// ---------- reply ts recording ----------
+
+describe("bot reply recording", () => {
+  it("records the ts on the success postMessage path (no heartbeat)", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeAgentRunner({
+      ok: true,
+      response: { text: "hello", duration_ms: 1, tool_calls: 0 },
+    });
+    const replies = makeBotReplyStore();
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: replies,
+    });
+    const client = makeClient({ placeholderTs: "reply-ts" });
+
+    await handler.handle(channelMention(), client, "mention");
+
+    expect(replies.peek("C123", "1700000000.000100")).toEqual(["reply-ts"]);
+  });
+
+  it("records the ts on the error postMessage path (resolver throws)", async () => {
+    const logger = makeLogger();
+    const sessionResolver: SessionResolver = {
+      resolve: vi.fn().mockRejectedValue(new Error("sqlite died")),
+    };
+    const agentRunner = makeAgentRunner({
+      ok: true,
+      response: { text: "x", duration_ms: 1, tool_calls: 0 },
+    });
+    const replies = makeBotReplyStore();
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: replies,
+    });
+    const client = makeClient({ placeholderTs: "err-ts" });
+
+    await handler.handle(channelMention(), client, "mention");
+
+    expect(replies.peek("C123", "1700000000.000100")).toEqual(["err-ts"]);
+  });
+});
+
+// ---------- handleDeletion ----------
+
+describe("handleDeletion", () => {
+  function buildHandler(replies = makeBotReplyStore()) {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeAgentRunner({
+      ok: true,
+      response: { text: "ok", duration_ms: 1, tool_calls: 0 },
+    });
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: replies,
+    });
+    return { handler, logger, sessionResolver, replies };
+  }
+
+  const deleteEvent: RawSlackEvent = {
+    type: "message",
+    subtype: "message_deleted",
+    channel: "C123",
+    deleted_ts: "1700000000.000100",
+  };
+
+  it("deletes every recorded reply ts, drops the reply rows, drops the session", async () => {
+    const { handler, sessionResolver, replies } = buildHandler();
+    replies.record("C123", "1700000000.000100", "r1");
+    replies.record("C123", "1700000000.000100", "r2");
+    const client = makeClient();
+
+    await handler.handleDeletion(deleteEvent, client);
+
+    expect(client.chat.delete).toHaveBeenCalledTimes(2);
+    expect(client.chat.delete).toHaveBeenCalledWith({ channel: "C123", ts: "r1" });
+    expect(client.chat.delete).toHaveBeenCalledWith({ channel: "C123", ts: "r2" });
+    expect(replies.peek("C123", "1700000000.000100")).toEqual([]);
+    expect(sessionResolver.drop).toHaveBeenCalledWith("C123:1700000000.000100");
+  });
+
+  it("logs a single summary line with deleted_count", async () => {
+    const { handler, logger, replies } = buildHandler();
+    replies.record("C123", "1700000000.000100", "r1");
+    replies.record("C123", "1700000000.000100", "r2");
+    const client = makeClient();
+
+    await handler.handleDeletion(deleteEvent, client);
+
+    expect(logger.info).toHaveBeenCalledWith(
+      "thread deleted cleanup",
+      expect.objectContaining({
+        channel_id: "C123",
+        thread_ts: "1700000000.000100",
+        deleted_count: 2,
+        failed_count: 0,
+      }),
+    );
+  });
+
+  it("is a no-op when the deleted ts isn't a tracked thread root", async () => {
+    const { handler, sessionResolver, replies } = buildHandler();
+    // Record replies on a *different* thread so the store is non-empty but
+    // the deletion doesn't match any row.
+    replies.record("C123", "1700000000.999999", "other");
+    const client = makeClient();
+
+    await handler.handleDeletion(deleteEvent, client);
+
+    expect(client.chat.delete).not.toHaveBeenCalled();
+    expect(sessionResolver.drop).not.toHaveBeenCalled();
+  });
+
+  it("one chat.delete rejection does not abort the rest; counts failures", async () => {
+    const { handler, logger, sessionResolver, replies } = buildHandler();
+    replies.record("C123", "1700000000.000100", "r1");
+    replies.record("C123", "1700000000.000100", "r2");
+    const client = makeClient();
+    client.chat.delete.mockRejectedValueOnce(new Error("cant_delete"));
+
+    await handler.handleDeletion(deleteEvent, client);
+
+    // First attempt failed, second succeeded — both were attempted.
+    expect(client.chat.delete).toHaveBeenCalledTimes(2);
+    // Reply rows still dropped; session still dropped.
+    expect(replies.peek("C123", "1700000000.000100")).toEqual([]);
+    expect(sessionResolver.drop).toHaveBeenCalledWith("C123:1700000000.000100");
+    expect(logger.info).toHaveBeenCalledWith(
+      "thread deleted cleanup",
+      expect.objectContaining({ deleted_count: 1, failed_count: 1 }),
+    );
+  });
+
+  it("ignores non-deletion events", async () => {
+    const { handler, replies } = buildHandler();
+    replies.record("C123", "1700000000.000100", "r1");
+    const client = makeClient();
+
+    await handler.handleDeletion(
+      { type: "message", subtype: "bot_message", channel: "C123" },
+      client,
+    );
+
+    expect(client.chat.delete).not.toHaveBeenCalled();
+    // Row still there because nothing matched.
+    expect(replies.peek("C123", "1700000000.000100")).toEqual(["r1"]);
   });
 });
 
@@ -607,6 +1032,7 @@ async function assertErrorMapping(
     agentRunner,
     logger,
     dedup: createDedup({ ttlMs: 60_000 }),
+    botReplyStore: makeBotReplyStore(),
   });
   const client = makeClient();
 
@@ -634,6 +1060,190 @@ async function assertErrorMapping(
   );
 }
 
+// ---------- progress poster (heartbeat) ----------
+
+describe("progress poster", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Build an AgentRunner that fires onProgress N times at offsets (ms) from
+  // when run() is awaited, then resolves to the given AgentResult. Used to
+  // simulate a slow agent run in unit tests with fake timers.
+  function makeRunnerWithProgress(opts: {
+    progressAt: number[];
+    result: AgentResult;
+  }): AgentRunner {
+    return {
+      run: vi.fn().mockImplementation(async (req) => {
+        for (let i = 0; i < opts.progressAt.length; i++) {
+          await vi.advanceTimersByTimeAsync(
+            i === 0 ? opts.progressAt[0] : opts.progressAt[i] - opts.progressAt[i - 1],
+          );
+          req.onProgress?.({
+            tool_calls: i + 1,
+            last_tool: `tool_${i + 1}`,
+          });
+        }
+        return opts.result;
+      }),
+    };
+  }
+
+  it("long turn: posts placeholder after delay, edits it on finalize, no extra postMessage", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    // With PLACEHOLDER_DELAY_MS=3s: first event at 500ms arms the timer;
+    // the timer fires at 3500ms (before the 4000ms event). Later events
+    // hit the placeholder and trigger debounced edits.
+    const agentRunner = makeRunnerWithProgress({
+      progressAt: [500, 4_000, 7_000],
+      result: {
+        ok: true,
+        response: { text: "final answer", duration_ms: 8_000, tool_calls: 3 },
+      },
+    });
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
+    });
+    const client = makeClient({ placeholderTs: "ph-ts" });
+
+    await handler.handle(channelMention(), client, "mention");
+
+    // Exactly one postMessage — the placeholder posted when the
+    // PLACEHOLDER_DELAY_MS timer fires (armed at 500ms, fires at 3500ms,
+    // well before the 4000ms event).
+    expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+    expect(client.chat.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "C123",
+        thread_ts: "1700000000.000100",
+        text: expect.stringContaining("Thinking…"),
+      }),
+    );
+
+    // Final text was posted via chat.update on the placeholder — not a new
+    // postMessage. This is the key assertion: the thread ends up with one
+    // message per turn.
+    expect(client.chat.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "C123",
+        ts: "ph-ts",
+        text: "final answer",
+      }),
+    );
+  });
+
+  it("fast turn (no progress events): no placeholder, final reply via postMessage", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeAgentRunner({
+      ok: true,
+      response: { text: "quick answer", duration_ms: 200, tool_calls: 0 },
+    });
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
+    });
+    const client = makeClient();
+
+    await handler.handle(channelMention(), client, "mention");
+
+    // No heartbeat: only the final postMessage fires; chat.update untouched.
+    expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+    expect(client.chat.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "quick answer" }),
+    );
+    expect(client.chat.update).not.toHaveBeenCalled();
+  });
+
+  it("failing turn with placeholder: edits placeholder to error text, no stranded 'Thinking…'", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeRunnerWithProgress({
+      progressAt: [500, 4_000],
+      result: { ok: false, error: { kind: "max_turns" } },
+    });
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: makeBotReplyStore(),
+    });
+    const client = makeClient({ placeholderTs: "ph-ts" });
+
+    await handler.handle(channelMention(), client, "mention");
+
+    // The placeholder was posted (first postMessage) — no second postMessage
+    // for the error; instead the placeholder was edited.
+    expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+    expect(client.chat.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ts: "ph-ts",
+        text: "Ran out of steps on this batch — try a smaller one.",
+      }),
+    );
+    // ❌ still added on the user's original message.
+    expect(client.reactions.add).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "x" }),
+    );
+  });
+
+  it("finalize falls back to postMessage if chat.update rejects (both ts recorded)", async () => {
+    const logger = makeLogger();
+    const sessionResolver = makeSessionResolver();
+    const agentRunner = makeRunnerWithProgress({
+      progressAt: [500, 4_000],
+      result: {
+        ok: true,
+        response: { text: "final", duration_ms: 10_000, tool_calls: 2 },
+      },
+    });
+    const replies = makeBotReplyStore();
+    const handler = createEventHandler({
+      sessionResolver,
+      agentRunner,
+      logger,
+      dedup: createDedup({ ttlMs: 60_000 }),
+      botReplyStore: replies,
+    });
+    // The placeholder post returns ph-ts; the fallback post returns
+    // fallback-ts. Default client mock returns the same ts for every call,
+    // so override chat.postMessage to return different ts's in order.
+    const client = makeClient({ placeholderTs: "ph-ts" });
+    client.chat.postMessage
+      .mockResolvedValueOnce({ ok: true, ts: "ph-ts" })
+      .mockResolvedValueOnce({ ok: true, ts: "fallback-ts" });
+    // First chat.update (from finalize) fails; poster must fall back to
+    // chat.postMessage so the user still gets a reply.
+    client.chat.update.mockRejectedValueOnce(new Error("rate_limited"));
+
+    await handler.handle(channelMention(), client, "mention");
+
+    // Two postMessage calls: the placeholder + the fallback.
+    expect(client.chat.postMessage).toHaveBeenCalledTimes(2);
+    expect(client.chat.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ text: "final" }),
+    );
+    // Both ts's must be recorded so a later thread deletion cleans up both.
+    expect(replies.peek("C123", "1700000000.000100")).toEqual([
+      "ph-ts",
+      "fallback-ts",
+    ]);
+  });
+});
+
 // ---------- factory smoke test ----------
 
 describe("createSlackAdapter (factory)", () => {
@@ -649,6 +1259,7 @@ describe("createSlackAdapter (factory)", () => {
         ok: true,
         response: { text: "x", duration_ms: 1, tool_calls: 0 },
       }),
+      botReplyStore: makeBotReplyStore(),
       logger,
     });
     expect(typeof adapter.start).toBe("function");

@@ -56,11 +56,17 @@ Skip the count if:
 
 ### Step 3 — Decide chunking
 
-- **N ≤ 5**: one chunk, done.
-- **5 < N ≤ 20**: sequential chunks of 5 via `OFFSET 0, 5, 10, 15`. Assemble all rows across chunks, then score the full set as one batch.
-- **N > 20**: pull the first 20 in four chunks of 5. Tell the user the total was N and they should re-run for the remainder.
+Run exactly `ceil(N / 5)` chunks, capped at 4. Stop after the chunk that covers the remainder — do not run empty chunks.
 
-Never fan out per-application. Each chunk is one query following the skeleton below.
+| N      | Chunks | OFFSETs        |
+|--------|--------|----------------|
+| 1–5    | 1      | 0              |
+| 6–10   | 2      | 0, 5           |
+| 11–15  | 3      | 0, 5, 10       |
+| 16–20  | 4      | 0, 5, 10, 15   |
+| > 20   | 4      | 0, 5, 10, 15 (then tell the user the total was N and they should re-run for the remainder) |
+
+Assemble rows across chunks, then score the full set as one batch. Never fan out per-application. Each chunk is one query following the skeleton below.
 
 ### Step 4 — Chunk query skeleton
 
@@ -113,100 +119,57 @@ Always cite founder name, company, and cohort in the output.
 
 ## AI Fluency scale
 
-AI Fluency is assigned by running the decision procedure below in order. Each step is a binary gate with explicit criteria. Stop at the first terminal level. Do not reinterpret earlier gates once you pass them.
+Five levels (L1–L5) scored across four evidence columns. **Score is max across columns** — the highest level the founder reaches in any column is their AI Fluency.
 
-### Signal definitions
+### Levels
 
-These definitions are the inputs to the gates. Apply them consistently — do not make up additional categories.
+- **L1** — uses AI as-is
+- **L2** — composes AI tools and workflows
+- **L3** — shapes AI behavior
+- **L4** — designs novel systems
+- **L5** — L4 plus a named public artifact others reference
 
-**Craft-level language.** Specific, technical descriptions of AI system behavior. Must reference at least one of:
-- A named failure mode (hallucination at a specific boundary, context loss, tool misuse, drift, specific error pattern)
-- An evaluation concern (how they measure, what "good" looks like, regression detection, golden sets)
-- Context management (what goes in the prompt/context window, retrieval strategy, chunking, windowing)
-- Retry / error handling (what happens when the model fails, fallbacks)
-- Tool design (how tools are exposed to agents, when the agent is allowed to call them)
-- Model selection with an explicit tradeoff ("we use X for Y because Z vs W")
-- Architecture choice with an explicit tradeoff (what they gave up, what broke)
+### Columns
 
-Generic claims ("we fine-tuned," "we use RAG," "it's accurate") are NOT craft-level on their own. The specificity is the signal.
+- **Engineering** — how they personally build. **Caps at L2.** Building AI for the business is Product/Ops, not Engineering.
+- **Daily use** — how they personally use AI. **Caps at L3.** Sophisticated use that ships or operates the business is Product/Ops.
+- **Product/Ops** — AI doing work in the business. **The only column with L4–L5 evidence.**
+- **Language** — how they describe AI. **Caps at L3.** Design-level prose is fakable without an artifact.
 
-**Magic-level language.** Abstract, marketing-register descriptions of AI:
-- "AI-powered", "AI-native", "AI-driven", "leveraging AI / LLMs / generative AI"
-- "Cutting-edge", "state-of-the-art", "intelligent" (unqualified)
-- Treating "AI" as a single undifferentiated capability
+Empty cells in the grid mean look elsewhere — the column doesn't carry signal at that level.
 
-**Canonical tool references (non-exhaustive).** Dev-loop: Cursor, Claude Code, Copilot, Aider, v0, Windsurf, Replit Agent. Orchestration/runtime: n8n, Zapier, Make, MCP, LangChain, LangGraph, CrewAI, AutoGen, Inngest, Temporal. Eval/infra: LangSmith, Braintrust, Helicone, DSPy, guardrails libraries. A mention must be explicit (named), not implied.
+### Tools date fast
 
-**Production AI.** AI doing work that would otherwise require a human, a team, or a conventional non-AI system. Two equivalent categories — treat them the same:
-- *In-product AI:* AI is a feature customers use — chat agent, classification, generation, recommendations, retrieval, decisioning.
-- *In-ops AI:* AI automates the company's own work — support triage, sales research, data processing, hiring pipeline, internal agent stacks running parts of the business. Agents running ops in production score the same as agents shipped in the product.
+Cells name 2026 SOTA exemplars to ground the scorer. Treat as exemplars, not checklists. The durable signal is what the founder *did* with the tool — iteration, design rationale, measured behavior. Naming a tool without those is L1.
 
-Both count as production only if live and doing real work. Demos, prototypes, "planned features," and build-process usage (Cursor, Copilot, etc.) do NOT count. If ambiguous whether something is live, treat as NO.
+### Main grid (April 2026)
 
-### Decision procedure
+| Level | Engineering | Daily use | Product/Ops | Language |
+|---|---|---|---|---|
+| **L1** | Copilot autocomplete only; no agent use | ChatGPT for personal tasks; no described workflow | "AI-powered" with no behavior detail; wrapper in marketing terms | **Marketing speak.** Undifferentiated AI. Names only models. Generic hype. |
+| **L2** | Cursor, Claude Code, or Codex as primary dev environment; agent mode usage; CLAUDE.md basics | Power user of Claude Desktop / ChatGPT with installed third-party MCPs and skills; n8n / Make / Zapier AI for personal and team work | Composed workflow (n8n, Make, Zapier AI) running parts of business; product wraps APIs without behavior shaping; prompt-only customization with no iteration story | **Vocabulary.** Concept-correct AI talk. Names tools and concepts (RAG, context windows, MCP, agents). Well-read people land here; real builders pass through here. |
+| **L3** | — | Authored own skills, MCPs, or plugins with design rationale; iterated personal AI workflows from specific observed failures; can describe what was iterated and why | Production AI in product or ops with engineering evidence: custom orchestration on LangGraph / CrewAI / OpenAI Agents SDK / Claude Agent SDK / Strands / Pydantic AI; tool/retry/context logic; programmatic tool calling; fine-tuning specifics; diagnosed failure modes; measured behavior on own data | **Opinions with weird specifics.** Stance on a concept plus the particular failure they hit ("RAG broke for us because compound queries hit two products and the retriever picked the dominant one"). Use-case-specific and hard to fake. |
+| **L4** | — | — | **Designed a system where design choices are visible in the writing.** Common shapes: eval harness with articulated catch/miss reasoning (Braintrust, Langfuse, Phoenix, custom); agent framework with explicit rejected alternatives; domain plugin systems (Cowork-style — multiple skills + MCPs orchestrated) with reasoning about scope and boundaries; behavior monitoring infrastructure with design rationale | — |
+| **L5** | — | — | L4 + named public artifact others reference: OSS infrastructure with users; novel pattern adopted by other builders; contribution to framework standards (MCP, Skills). Claim alone doesn't count — artifact must be named and verifiable. | — |
 
-Run the gates in order. Stop at the first terminal.
+### 2026 tooling notes
 
-**Gate 0 — Sufficiency.**
-Are the key fields (`problem`, `company_description`, `progress`, and at least one of `unique_insight` / `journey`) substantively populated, with the full application ≥ 500 words of content?
-- NO → **Level 0** (insufficient data). Terminal.
-- YES → continue.
+What "table stakes" means. Adjust scoring accordingly.
 
-**Gate 1 — AI presence.**
-Does the application mention AI, ML, LLMs, agents, or any specific AI tool/model anywhere?
-- NO → **Level 0** (no signal). Terminal.
-- YES → continue.
+- **Copilot is baseline.** Cursor, Claude Code, or Codex is L2 dev-loop. Copilot alone is closer to L1.
+- **Multi-agent shipped table stakes Feb 2026.** Parallel agents (Conductor, Superset) for dev work is L2 baseline, not L3.
+- **Skills (open standard Dec 2025) is a real L3 path for non-coders.** Authoring with design rationale qualifies; installing third-party doesn't.
+- **Plugins (skills + MCPs + hooks bundled) sit L3–L4.** Anthropic's Cowork data plugin is the public reference for L4-tier design.
+- **Eval/observability is a real layer.** Naming a platform (Braintrust, Langfuse, Phoenix, LangSmith) with what it catches/misses qualifies L4. "We have evals" doesn't.
+- **L3 production AI usually names** LangGraph, CrewAI, OpenAI Agents SDK, Claude Agent SDK, Strands, Pydantic AI. Bare LangChain in 2026 is a yellow flag.
 
-**Gate 2 — Magic-only cap.**
-Is ALL AI language in the application magic-level (zero craft-level language, zero specific tool names, zero architectural specifics)?
-- YES → **Level 1**. Terminal.
-- NO → continue.
+### Methodology
 
-**Gate 3 — Production deployment.**
-Is there production AI (as defined above, in-product OR in-ops) in the running business?
-- NO → go to Gate 3a.
-- YES → go to Gate 4.
-
-**Gate 3a — Dev-loop check (L1 vs L2).**
-Does the founder name at least one dev-loop tool from the canonical list as part of how they build?
-- YES → **Level 2**. Terminal.
-- NO → **Level 1**. Terminal.
-
-**Gate 4 — Architect check.**
-BOTH of the following must be present in the founder's own description of their work:
-- (a) At least one craft-level concern about AI behavior (failure modes, evals, context, retries, tool design) — specific, not generic.
-- (b) At least one named architecture decision with explicit tradeoff language (why X over Y, what they gave up, what broke, what they had to work around).
-
-- Both YES → go to Gate 5.
-- One or neither → **Level 3**. Terminal.
-
-**Gate 5 — Exceptional.**
-Has the founder shipped a named public artifact that other builders use or reference (OSS project with users, widely-adopted pattern, talk or post others cite)? Claim alone is insufficient — the artifact must be named.
-- YES → **Level 5**. Terminal.
-- NO → **Level 4**. Terminal.
-
-### Evidence requirement
-
-Before emitting the score, collect the quoted spans from the application that triggered each passing gate. Minimums:
-
-- Level 1: 1 quote showing AI presence.
-- Level 2: 1 quote naming a specific dev-loop tool in the build-process context.
-- Level 3: 2 quotes — one establishing production AI (in-product or in-ops), one additional supporting signal.
-- Level 4: 3 quotes — production AI, craft-level concern (Gate 4a), architecture tradeoff (Gate 4b).
-- Level 5: Level 4 quotes + 1 quote naming the public artifact.
-
-If the quote minimums cannot be collected from the application text, drop one level and re-check. This prevents scoring on impression alone and makes the audit trail in Part 2 fall out automatically.
-
-### Level names
-
-Used in the Part 1 card output:
-
-- 0 — (no label; use `—` or `insufficient data`)
-- 1 — Prompter
-- 2 — Builder
-- 3 — Orchestrator
-- 4 — Architect
-- 5 — Exceptional
+1. Walk the four columns. For each, pick the highest level the founder's evidence supports.
+2. AI Fluency = max across columns.
+3. **Sufficiency floor.** If the application is sparse (key fields empty, < 500 words of substance) or contains no AI mention at all, score L0 and note `insufficient data`.
+4. **Cite evidence.** For the column that drives the score, quote the founder's own words in Part 2. If the score is L4+, the evidence MUST come from the Product/Ops column — no exceptions.
+5. **L4–L5 require an artifact, not a claim.** L4 needs visible design rationale. L5 needs a named, verifiable public artifact.
 
 ## Customer Insight scale
 
@@ -278,35 +241,14 @@ Does the founder show operator-level insider knowledge via either path?
 - Either path clearly satisfied → **Level 5**. Terminal.
 - Neither → **Level 4**. Terminal.
 
-### Evidence requirement
-
-Before emitting the score, collect the quoted spans that triggered each passing gate. Minimums:
-
-- Level 1: 0 quotes (thesis-only is the absence of contact signal; confirm by noting no customer interaction is described).
-- Level 2: 1 quote showing customer contact.
-- Level 3: 2 quotes — one showing contact, one showing specific-archetype detail.
-- Level 4: 3 quotes — contact, specific-archetype detail, and at least one Gate 3 signal (named individual, non-obvious behavior, or substitute awareness).
-- Level 5: 4 quotes — Level 4 evidence plus either operator background (with substantive detail) or weird substructure clearly established.
-
-If the quote minimums cannot be collected from the application text, drop one level and re-check.
-
-### Level names
-
-- 0 — (no label; use `—` or `insufficient data`)
-- 1 — Thesis-only
-- 2 — Surface
-- 3 — Archetype
-- 4 — Specific
-- 5 — Operator
-
 ## Scoring rules
 
 1. **ICP-fit is `AI Fluency >= 3` AND `Customer Insight >= 3`.** Anything else is not ICP-fit. If either score is 0, `icp_fit` is false and the reason should mention needing enrichment.
 
 2. **Confidence** is anchored to evidence coverage:
-   - **high**: quote minimums exceeded; signals appear in multiple answers; no contradictions.
-   - **medium**: quote minimums met exactly; some contradiction; or passing gate was narrow.
-   - **low**: quote minimums barely met; contradictory signals; or borderline gate decision. Use the `⚠️ Review` verdict and name the borderline gate in Part 2.
+   - **high**: signals appear in multiple answers; no contradictions.
+   - **medium**: evidence is thin or single-sourced; some contradiction; or passing gate/column was narrow.
+   - **low**: evidence is barely present; contradictory signals; or borderline gate/column decision. Use the `⚠️ Review` verdict and name the borderline gate or column in Part 2.
 
 Quote the founder's own words where possible. Do not infer facts not present in the application.
 
@@ -319,7 +261,7 @@ Two parts, Slack mrkdwn.
 One card per application. Two lines.
 
 - **Line 1:** `*{#}. {Founder name}* · {Company} · {Cohort} · {Loc}`
-- **Line 2:** `{verdict} · AI Fluency {score} ({level name}) · Customer Insight {score} ({level name})`
+- **Line 2:** `{verdict} · AI Fluency {score} · Customer Insight {score}`
 
 **Verdict** is one of:
 
@@ -335,8 +277,8 @@ One card per application. Two lines.
 
 **Score formatting:**
 
-- Bold any score ≥ 4 with `*…*` — e.g. `AI Fluency *4 (Architect)*`.
-- Scores ≤ 3 are plain — e.g. `AI Fluency 3 (Orchestrator)`.
+- Bold any score ≥ 4 with `*…*` — e.g. `AI Fluency *4*`.
+- Scores ≤ 3 are plain — e.g. `AI Fluency 3`.
 
 **Sparse / Level 0 rows:** collapse to a single Line 2. If founder name is known, still show Line 1 normally. If nothing is known, use `*{#}. —* · {Cohort or —}` for Line 1.
 
@@ -349,13 +291,13 @@ One card per application. Two lines.
 
 ```
 *1. Jane Doe* · Acme · W25 · SF
-✅ *Fit* · AI Fluency *4 (Architect)* · Customer Insight 3 (Archetype)
+✅ *Fit* · AI Fluency *4* · Customer Insight 3
 
 *2. Bob Smith* · Widget Co · W25 · NYC
-❌ *Miss — AI fluency* · AI Fluency 2 (Builder) · Customer Insight *4 (Specific)*
+❌ *Miss — AI fluency* · AI Fluency 2 · Customer Insight *4*
 
 *3. Clara Ng* · Bolt · W25 · SF
-⚠️ *Review — low conf* · AI Fluency 3 (Orchestrator) · Customer Insight 3 (Archetype)
+⚠️ *Review — low conf* · AI Fluency 3 · Customer Insight 3
 
 *4. John Kim* · Helix · W25 · Austin
 ❌ *Sparse application*
@@ -371,7 +313,7 @@ One structured block per ICP-fit (`✅`) or borderline (`⚠️`) founder. Skip 
 *{#}. {Founder name} — {Company}* · AI Fluency {score} · Customer Insight {score} · {verdict}
 
 *AI Fluency:* `"<exact quote from founder>"`
-  → {signal name} ({Gate N})
+  → {Column} L{level}: <one-line reason>
 *Customer Insight:* `"<exact quote from founder>"`
   → {signal name} ({Gate N})
 *Traction:* <one line — only if shown in the application>
@@ -382,8 +324,10 @@ One structured block per ICP-fit (`✅`) or borderline (`⚠️`) founder. Skip 
 
 - Blank line between blocks.
 - Quotes are verbatim from the founder's answers, in backticks.
-- The `→` line names which signal the quote satisfies and the gate it triggered. Examples: `→ architecture tradeoff (Gate 4b)`, `→ non-obvious behavior (Gate 3b)`, `→ operator background, Path A (Gate 4)`.
-- For borderline gates, replace the `→` line with: `→ borderline at Gate {N}: <one-line reason>`. Example: `→ borderline at Gate 4b: only one tradeoff statement, phrased loosely`.
+- For AI Fluency, the `→` line names the column the quote came from and the level it satisfied. Examples: `→ Product/Ops L4: design rationale visible`, `→ Daily use L3: iterated own skill from observed failure`, `→ Engineering L2: Claude Code as primary dev loop`.
+- For Customer Insight, the `→` line names which signal the quote satisfies and the gate it triggered. Examples: `→ non-obvious behavior (Gate 3b)`, `→ operator background, Path A (Gate 4)`.
+- For borderline AI Fluency, replace the `→` line with: `→ borderline at {Column} L{level}: <one-line reason>`. Example: `→ borderline at Product/Ops L4: only one design-rationale statement, phrased loosely`.
+- For borderline Customer Insight gates, replace the `→` line with: `→ borderline at Gate {N}: <one-line reason>`. Example: `→ borderline at Gate 4b: only one tradeoff statement, phrased loosely`.
 - Drop `Traction` if the application doesn't show it.
 - Drop `Flags` if empty. Flags are pod-level callouts only.
 
@@ -393,7 +337,7 @@ One structured block per ICP-fit (`✅`) or borderline (`⚠️`) founder. Skip 
 *1. Jane Doe — Acme* · AI Fluency 4 · Customer Insight 3 · ✅ *Fit*
 
 *AI Fluency:* `"we had to cap context at 40k because reasoning degrades past that — tried chunking but retrieval lost compound filings"`
-  → specific architecture tradeoff (Gate 4b)
+  → Product/Ops L4: explicit context-window tradeoff with named failure mode
 *Customer Insight:* `"the banking ops leads we work with all maintain a shadow sheet because Netsuite doesn't track approvals — that's where the real workflow lives"`
   → non-obvious behavior + substitute awareness (Gate 3b + 3c)
 *Traction:* 3 banking design partners, $30k MRR
@@ -401,7 +345,7 @@ One structured block per ICP-fit (`✅`) or borderline (`⚠️`) founder. Skip 
 *2. Clara Ng — Bolt* · AI Fluency 3 · Customer Insight 3 · ⚠️ *Review — borderline*
 
 *AI Fluency:* `"our classifier sometimes gets tripped up on edge cases so we have retries"`
-  → borderline at Gate 4a: retry mention is generic, no specific failure mode named
+  → borderline at Product/Ops L3: retry mention is generic, no specific failure mode named
 *Customer Insight:* `"ops managers at 3 of our pilots told us they'd quit if we went away"`
   → specific-archetype detail (Gate 2)
 ```

@@ -148,7 +148,7 @@ Cells name 2026 SOTA exemplars to ground the scorer. Treat as exemplars, not che
 |---|---|---|---|---|
 | **L1** | Copilot autocomplete only; no agent use | ChatGPT for personal tasks; no described workflow | "AI-powered" with no behavior detail; wrapper in marketing terms | **Marketing speak.** Undifferentiated AI. Names only models. Generic hype. |
 | **L2** | Cursor, Claude Code, or Codex as primary dev environment; agent mode usage; CLAUDE.md basics | Power user of Claude Desktop / ChatGPT with installed third-party MCPs and skills; n8n / Make / Zapier AI for personal and team work | Composed workflow (n8n, Make, Zapier AI) running parts of business; product wraps APIs without behavior shaping; prompt-only customization with no iteration story | **Vocabulary.** Concept-correct AI talk. Names tools and concepts (RAG, context windows, MCP, agents). Well-read people land here; real builders pass through here. |
-| **L3** | — | Authored own skills, MCPs, or plugins with design rationale; iterated personal AI workflows from specific observed failures; can describe what was iterated and why | Production AI in product or ops with engineering evidence: custom orchestration on LangGraph / CrewAI / OpenAI Agents SDK / Claude Agent SDK / Strands / Pydantic AI; tool/retry/context logic; programmatic tool calling; fine-tuning specifics; diagnosed failure modes; measured behavior on own data | **Opinions with weird specifics.** Stance on a concept plus the particular failure they hit ("RAG broke for us because compound queries hit two products and the retriever picked the dominant one"). Use-case-specific and hard to fake. |
+| **L3** | — | Authored own skills, MCPs, or plugins with design rationale; iterated personal AI workflows from specific observed failures; can describe what was iterated and why | Production AI in product or ops with engineering evidence: custom orchestration on LangGraph / CrewAI / OpenAI Agents SDK / Claude Agent SDK / Strands / Pydantic AI; tool/retry/context logic; programmatic tool calling; fine-tuning specifics; diagnosed failure modes; measured behavior on own data | **Opinions with weird specifics — about AI behavior.** Stance on an AI concept plus the particular failure they hit, where the failure is about the AI system itself ("RAG broke for us because compound queries hit two products and the retriever picked the dominant one"). Domain expertise expressed with conviction is *not* AI Fluency — it's Customer Insight or domain craft. |
 | **L4** | — | — | **Designed a system where design choices are visible in the writing.** Common shapes: eval harness with articulated catch/miss reasoning (Braintrust, Langfuse, Phoenix, custom); agent framework with explicit rejected alternatives; domain plugin systems (Cowork-style — multiple skills + MCPs orchestrated) with reasoning about scope and boundaries; behavior monitoring infrastructure with design rationale | — |
 | **L5** | — | — | L4 + named public artifact others reference: OSS infrastructure with users; novel pattern adopted by other builders; contribution to framework standards (MCP, Skills). Claim alone doesn't count — artifact must be named and verifiable. | — |
 
@@ -163,6 +163,16 @@ What "table stakes" means. Adjust scoring accordingly.
 - **Eval/observability is a real layer.** Naming a platform (Braintrust, Langfuse, Phoenix, LangSmith) with what it catches/misses qualifies L4. "We have evals" doesn't.
 - **L3 production AI usually names** LangGraph, CrewAI, OpenAI Agents SDK, Claude Agent SDK, Strands, Pydantic AI. Bare LangChain in 2026 is a yellow flag.
 
+### Anchor cases
+
+| Case | Score | Reason |
+|---|---|---|
+| Founder describes autonomous AI systems running production work, but only at capability level (what they do, how much they do) without engineering detail (how they work, where they break) | **L2** | Capability claims without engineering evidence are wrappers, not Production-AI L3+ |
+| Founder has strong domain opinions stated with conviction, but the opinions are about their industry, not about AI system behavior | **Domain conviction does not raise AI Fluency** | Score AI Fluency on AI signal only; domain insight feeds Customer Insight |
+| Founder names Cursor / Claude Code / Codex as primary dev environment with described iteration on CLAUDE.md or skills | **L2 Engineering / L3 Daily use** | Engineering caps at L2; Daily use carries L3 if the iteration story is real |
+| Founder names LangGraph / Claude Agent SDK / Strands with diagnosed failure modes and measured behavior on own data | **L3 Product/Ops** | Production AI with engineering evidence — the diagnostic detail is the signal |
+| Founder claims production AI but the description is "AI-powered automation" with no failure modes, no orchestration named, no measured behavior | **L1 Product/Ops** | Marketing-speak about production AI is L1, not L3 |
+
 ### Methodology
 
 1. Walk the four columns. For each, pick the highest level the founder's evidence supports.
@@ -173,73 +183,66 @@ What "table stakes" means. Adjust scoring accordingly.
 
 ## Customer Insight scale
 
-Customer Insight is assigned by running the decision procedure below in order. Each step is a binary gate with explicit criteria. Stop at the first terminal level. Do not reinterpret earlier gates once you pass them.
+Five levels (L1–L5) scored across three evidence columns. **Score is max across columns** — the highest level the founder reaches in any column is their Customer Insight.
 
-### Signal definitions
+### Levels
 
-**Abstraction-level language.** The founder talks about "the market," "users," "customers" as aggregates. Descriptions are segment-level without individuals, workflows, or substructure named. Examples:
-- "We see strong demand from mid-market SaaS"
-- "Customers struggle with reporting"
-- "SMBs care about speed and price"
+- **L1** — thesis only
+- **L2** — surface; generic market understanding
+- **L3** — archetypal; specifics beyond market-report depth
+- **L4** — non-obvious; specifics hard to fabricate without having done the work
+- **L5** — operator-level; insider position with substantive detail
 
-Interview counts without substance ("we talked to 100 founders") are abstraction-level unless paired with specific content from those interviews.
+### Columns
 
-**Concrete contact.** Specific, countable customer interactions visible in the text:
-- Named individuals they've spoken to (first name + role at minimum)
-- Named customer companies (pilots, design partners, prospects)
-- Direct quotes from customer conversations
-- Counted interactions tied to specific outcomes ("5 of the 8 ops leads we interviewed said X")
+- **Contact** — what they've learned from talking to customers. **Caps at L4.**
+- **Market** — structural understanding of how the market works. **Caps at L4.**
+- **Position** — founder's relationship to the space. **The only column with L5 evidence.**
 
-**Specific-archetype detail.** One level below naming individuals: the founder describes the buyer/user at a level of detail that could only come from real conversations — a concrete workflow, a specific pain with specific context, the exact tool they use today. Not an aggregate, not yet a named individual.
+Empty cells in the grid mean look elsewhere — the column doesn't carry signal at that level.
 
-**Non-obvious behavior.** A claim about what customers actually do that wouldn't appear in a Gartner report, a landing page, or an obvious market analysis. Examples:
-- "The buyer signs off but the intern actually decides because the buyer routes all RFPs to them"
-- "They track this in a WhatsApp group because email threads get buried"
-- "The real bottleneck is the data-entry person re-keying leads because the sync breaks nightly"
+### Main grid
 
-Non-obvious behaviors are the fingerprint of real customer time.
+| Level | Contact | Market | Position |
+|---|---|---|---|
+| **L1** | No customer contact described; thesis stated in abstractions ("customers struggle with reporting", "SMBs care about speed and price") | No structural understanding beyond TAM-style claims | No relationship to the space stated; outsider perspective |
+| **L2** | Has talked to people; describes the segment in aggregate; interview counts without substance ("we talked to 100 founders") | Names competitors and adjacent products; describes the category in standard terms | Generic professional background; passing exposure ("I used this product once") |
+| **L3** | **Archetypal specificity.** Concrete workflow, specific pain with context, the exact tool used today, attributed segment behavior ("high-value Prosumers reject fully autonomous tools because they need precise control over voice modulation") | **Substitutes named with failure modes.** What customers use today and why it doesn't quite work — a substantive account of the substitute's failure, not "we're better" | Adjacent industry experience; team includes practitioners from the space; sustained domain time |
+| **L4** | **Non-obvious specifics.** Named customer companies with attributed behavior (pilots, design partners, prospects with what they did or said); direct quotes from customer conversations; counted interactions tied to specific outcomes ("5 of 8 ops leads said X"); fingerprints of real customer time ("the buyer signs off but the intern actually decides because the buyer routes all RFPs to them") | **Weird market mechanics.** Pricing structures, deal flow, procurement quirks, financial flows, who pays whom — detail that wouldn't appear in a market research report | Founder personally worked in the target role/market with substantive detail surfacing in the writing; team includes operators from the space with attributed knowledge |
+| **L5** | — | — | **Insider operator-level.** Founder has personally worked in the market AND demonstrates operator-level depth from that experience — not just the credential, the knowledge. Or: systematic weird-substructure knowledge (power dynamics, structural reasons obvious solutions fail, financial flows invisible from outside). Knows things nobody outside the space would. |
 
-**Substitute awareness.** The founder names what the customer uses today — a competitor, a spreadsheet, a meeting, a manual workaround, a non-decision — AND explains WHY that substitute fails for them. Not "our product is better"; a substantive account of the substitute's failure mode.
+### The three cuts
 
-**Operator background.** The founder has personally worked in the target market, ideally in the target role or an adjacent insider position. Not "I used this product once"; enough time inside the space to see how it actually works.
+| Cut | Test | Failure mode to avoid |
+|---|---|---|
+| **L1 → L2** | Have they talked to anyone, or is it pure thesis? | Scoring "we surveyed the market" as L2 contact |
+| **L2 → L3** | Specifics beyond what a market report would say? | Scoring aggregate-level claims with conviction as L3 |
+| **L3 → L4** | Non-obvious specifics that would be hard to fabricate? | Scoring archetypal depth as L4 because it's well-articulated |
 
-**Weird substructure.** Insider-only knowledge about how the market actually works — who pays whom, where decisions actually happen versus where they appear to happen, why obvious solutions don't work at a structural level, financial flows or power dynamics invisible from outside. The strongest customer-insight signal.
+L2 → L3 is the ICP cut. Watermark: *specifics beyond market-report depth.* "Customers are frustrated with current tools" stays L2. "High-value Prosumers reject fully autonomous tools because they need precise control over voice modulation for professional storytelling" qualifies L3.
 
-### Decision procedure
+L3 → L4 watermark: *would this appear in a market research report?* Named substitutes with failure modes can appear in reports → L3. Named customer companies with attributed behavior, or weird market mechanics like per-minute pricing structures and IP-library procurement → L4 because reports don't have that texture.
 
-Run the gates in order. Stop at the first terminal.
+### Anchor cases
 
-**Gate 0 — Sufficiency.**
-Are the key fields (`problem`, `validation`, `progress`, at least one of `unique_insight` / `journey`) substantively populated, with the full application ≥ 500 words of content?
-- NO → **Level 0** (insufficient data). Terminal.
-- YES → continue.
+| Case | Score | Reason |
+|---|---|---|
+| Pure thesis, no contact described | **L1** | Nothing qualifies anywhere |
+| "We talked to 100 founders, they all said X" | **L2** | Interview count without substance |
+| "High-value Prosumers reject fully autonomous tools — they need precise control" | **L3** | Contact: archetypal specificity beyond market-report depth |
+| "Movieflow and Medeo lack precision for professional storytelling" | **L3** | Market: substitutes with failure mode |
+| "Douyin pays SGD 1,300/min for AI comic dramas; ByteDance Shortdrama Center procures via 60k IP novel library" | **L4** | Market: weird mechanics and structural deal flow |
+| Archetypal contact (L3) + weird market mechanics (L4) + film team (L3) | **L4** | Max-across is L4 — Market column carries it even though Contact stays L3 |
+| Founder ran ops at target customer for 4 years, describes specific dysfunction with mechanism | **L5** | Position: operator-level with substantive detail |
+| Founder claims industry experience, no operator detail in the writing | **Score on text** | Credential alone doesn't qualify L5; need the knowledge surfaced |
 
-**Gate 1 — Customer contact presence.**
-Does the application show any evidence of actual customer contact — conversations, interviews, pilots, deployments, named customers, quoted customer words?
-- NO → **Level 1** (thesis-only). Terminal.
-- YES → continue.
+### Methodology
 
-**Gate 2 — Specificity check.**
-Can you quote at least one span where the founder describes customers at specific-archetype level or better — a concrete workflow detail, a specific pain with context, a named individual, or a direct customer quote?
-- NO (all customer language is abstraction-level) → **Level 2** (surface). Terminal.
-- YES → continue.
-
-**Gate 3 — Weirdness / insider check.**
-Does the founder describe at least one of the following?
-- (a) A named individual customer with attributed behavior, quote, or specific interaction
-- (b) A non-obvious customer behavior (as defined above)
-- (c) A named substitute plus substantive reason it fails
-
-- NONE present → **Level 3**. Terminal.
-- At least one → continue.
-
-**Gate 4 — Operator-level check.**
-Does the founder show operator-level insider knowledge via either path?
-- *Path A:* Founder has personally worked in the target market or role, AND demonstrates operator-level detail from that experience (not just the credential — the knowledge).
-- *Path B:* Founder describes weird substructure — insider-only knowledge that wouldn't be in any public source (who pays whom, power dynamics, financial flows, structural reasons obvious solutions fail).
-
-- Either path clearly satisfied → **Level 5**. Terminal.
-- Neither → **Level 4**. Terminal.
+1. Walk the three columns. For each, pick the highest level the founder's evidence supports.
+2. Customer Insight = max across columns.
+3. **Sufficiency floor.** If the application is sparse (key fields empty, < 500 words of substance) or contains no customer-facing signal at all, score L0 and note `insufficient data`.
+4. **Cite evidence.** For the column that drives the score, quote the founder's own words in Part 2. If the score is L5, the evidence MUST come from the Position column — no exceptions.
+5. **L5 requires knowledge in the writing, not a credential.** "I worked at X for 4 years" without operator-level detail surfacing is L4 at most.
 
 ## Scoring rules
 
@@ -247,8 +250,8 @@ Does the founder show operator-level insider knowledge via either path?
 
 2. **Confidence** is anchored to evidence coverage:
    - **high**: signals appear in multiple answers; no contradictions.
-   - **medium**: evidence is thin or single-sourced; some contradiction; or passing gate/column was narrow.
-   - **low**: evidence is barely present; contradictory signals; or borderline gate/column decision. Use the `⚠️ Review` verdict and name the borderline gate or column in Part 2.
+   - **medium**: evidence is thin or single-sourced; or the column that drives the score is narrow.
+   - **low**: evidence is barely present; contradictory signals; or borderline column decision. Use the `⚠️ Review` verdict and name the borderline column in Part 2.
 
 Quote the founder's own words where possible. Do not infer facts not present in the application.
 
@@ -269,11 +272,11 @@ One card per application. Two lines.
 |---|---|
 | `✅ *Fit*` | Both scores ≥ 3, confidence is medium or high, no borderline gates. |
 | `⚠️ *Review — low conf*` | Both scores ≥ 3 but confidence is low. |
-| `⚠️ *Review — borderline*` | Both scores ≥ 3 but at least one gate decision was borderline. |
+| `⚠️ *Review — borderline*` | Both scores ≥ 3 but at least one column decision was borderline. |
 | `❌ *Miss — AI fluency*` | AI Fluency < 3, Customer Insight ≥ 3. |
 | `❌ *Miss — customer*` | Customer Insight < 3, AI Fluency ≥ 3. |
 | `❌ *Miss — both*` | Both < 3. |
-| `❌ *Miss — no AI*` | AI Fluency is 0 due to no AI presence (Gate 1 fail), regardless of Customer Insight. |
+| `❌ *Miss — no AI*` | AI Fluency is 0 due to no AI presence (L0 sufficiency floor), regardless of Customer Insight. |
 
 **Score formatting:**
 
@@ -315,7 +318,7 @@ One structured block per ICP-fit (`✅`) or borderline (`⚠️`) founder. Skip 
 *AI Fluency:* `"<exact quote from founder>"`
   → {Column} L{level}: <one-line reason>
 *Customer Insight:* `"<exact quote from founder>"`
-  → {signal name} ({Gate N})
+  → {Column} L{level}: <one-line reason>
 *Traction:* <one line — only if shown in the application>
 *Flags:* <one line — only if any apply>
 ```
@@ -324,10 +327,8 @@ One structured block per ICP-fit (`✅`) or borderline (`⚠️`) founder. Skip 
 
 - Blank line between blocks.
 - Quotes are verbatim from the founder's answers, in backticks.
-- For AI Fluency, the `→` line names the column the quote came from and the level it satisfied. Examples: `→ Product/Ops L4: design rationale visible`, `→ Daily use L3: iterated own skill from observed failure`, `→ Engineering L2: Claude Code as primary dev loop`.
-- For Customer Insight, the `→` line names which signal the quote satisfies and the gate it triggered. Examples: `→ non-obvious behavior (Gate 3b)`, `→ operator background, Path A (Gate 4)`.
-- For borderline AI Fluency, replace the `→` line with: `→ borderline at {Column} L{level}: <one-line reason>`. Example: `→ borderline at Product/Ops L4: only one design-rationale statement, phrased loosely`.
-- For borderline Customer Insight gates, replace the `→` line with: `→ borderline at Gate {N}: <one-line reason>`. Example: `→ borderline at Gate 4b: only one tradeoff statement, phrased loosely`.
+- For both axes, the `→` line names the column the quote came from and the level it satisfied. AI Fluency examples: `→ Product/Ops L4: design rationale visible`, `→ Daily use L3: iterated own skill from observed failure`, `→ Engineering L2: Claude Code as primary dev loop`. Customer Insight examples: `→ Contact L4: named customer with attributed quote`, `→ Market L3: named substitutes with failure mode`, `→ Position L5: operator detail surfaced from prior role`.
+- For borderline calls, replace the `→` line with: `→ borderline at {Column} L{level}: <one-line reason>`. Example: `→ borderline at Market L4: one weird-mechanics claim, no second confirming detail`.
 - Drop `Traction` if the application doesn't show it.
 - Drop `Flags` if empty. Flags are pod-level callouts only.
 
@@ -339,7 +340,7 @@ One structured block per ICP-fit (`✅`) or borderline (`⚠️`) founder. Skip 
 *AI Fluency:* `"we had to cap context at 40k because reasoning degrades past that — tried chunking but retrieval lost compound filings"`
   → Product/Ops L4: explicit context-window tradeoff with named failure mode
 *Customer Insight:* `"the banking ops leads we work with all maintain a shadow sheet because Netsuite doesn't track approvals — that's where the real workflow lives"`
-  → non-obvious behavior + substitute awareness (Gate 3b + 3c)
+  → Contact L4: named ops leads with attributed shadow-sheet behavior
 *Traction:* 3 banking design partners, $30k MRR
 
 *2. Clara Ng — Bolt* · AI Fluency 3 · Customer Insight 3 · ⚠️ *Review — borderline*
@@ -347,7 +348,7 @@ One structured block per ICP-fit (`✅`) or borderline (`⚠️`) founder. Skip 
 *AI Fluency:* `"our classifier sometimes gets tripped up on edge cases so we have retries"`
   → borderline at Product/Ops L3: retry mention is generic, no specific failure mode named
 *Customer Insight:* `"ops managers at 3 of our pilots told us they'd quit if we went away"`
-  → specific-archetype detail (Gate 2)
+  → Contact L3: specific-archetype detail from named pilots
 ```
 
 ## Tone and style
